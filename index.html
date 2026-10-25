@@ -1,0 +1,1967 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bloxxer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jacquard+24&family=Silkscreen&display=swap">
+<style>
+/* Layout: the game frame alone, centred. Title-screen settings and the controls line live inside the frame. */
+:root {
+  --void: #08070c;
+  --frame: #26222f;
+  --ink: #ece3d3;
+  --dim: #8a849a;
+  --torch: #f0a24a;
+  --rune: #7fe8f0;
+  --pixel: "Silkscreen", ui-monospace, "Courier New", monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--void);
+  color: var(--ink);
+  font-family: var(--pixel);
+  display: grid;
+  place-items: center;
+  padding-block: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.stage { position: relative; line-height: 0; --u: 3px; }
+#cv {
+  position: relative;
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: #000;
+  box-shadow: 0 0 0 1px #000, 0 0 0 calc(var(--u) * 1.4) var(--frame), 0 0 0 calc(var(--u) * 2.8) #000;
+}
+.pvwrap { position: absolute; left: 0; top: 0; overflow: hidden; background: #000; }
+.pvwrap[hidden] { display: none; }
+#pvc { position: absolute; left: 0; top: 0; transform-origin: 0 0; image-rendering: pixelated; image-rendering: crisp-edges; will-change: transform; }
+.hud {
+  position: absolute; left: calc(var(--u) * 6); top: calc(var(--u) * 5); pointer-events: none;
+  font-size: max(12px, calc(var(--u) * 6)); line-height: 1; letter-spacing: .06em;
+  text-shadow: 0 calc(var(--u) * .5) 0 #000, 0 0 calc(var(--u) * 3) #000;
+}
+.hud[hidden], .keys[hidden], .settings[hidden], .binds[hidden] { display: none; }
+.keys {
+  position: absolute; left: 0; right: 0; bottom: calc(var(--u) * 5);
+  display: flex; flex-wrap: wrap; justify-content: center; gap: calc(var(--u) * 2) calc(var(--u) * 7);
+  font-size: max(11px, calc(var(--u) * 4.2)); line-height: 1.2; letter-spacing: .04em;
+  color: var(--dim); text-shadow: 0 1px 0 #000, 0 0 8px #000; pointer-events: none;
+  padding-inline: calc(var(--u) * 4);
+}
+.keys b { color: var(--ink); font-weight: 400; margin-right: .5em; }
+.settings {
+  position: absolute; left: calc(var(--u) * 6); top: calc(var(--u) * 5);
+  display: grid; gap: calc(var(--u) * 3); justify-items: start;
+  font-size: max(11px, calc(var(--u) * 4.4)); line-height: 1.15; letter-spacing: .06em;
+}
+.settings button {
+  font: inherit; letter-spacing: inherit; color: var(--dim); background: none; border: 0; padding: 0;
+  cursor: pointer; text-shadow: 0 1px 0 #000;
+}
+.settings button:hover, .settings button:focus-visible { color: var(--ink); outline: none; }
+.binds { display: grid; gap: calc(var(--u) * 2.5); padding: calc(var(--u) * 4) calc(var(--u) * 5); background: #0b0a10e6; box-shadow: 0 0 0 1px #3a3446; }
+.binds button { display: flex; justify-content: space-between; gap: calc(var(--u) * 10); min-width: calc(var(--u) * 70); }
+.binds button b { font-weight: 400; color: var(--ink); }
+.binds button.listen b { color: var(--torch); }
+</style>
+</head>
+<body>
+
+<main class="stage" id="stage">
+  <div class="pvwrap" id="pvwrap" hidden><canvas id="pvc" width="320" height="192"></canvas></div>
+  <canvas id="cv" width="320" height="192" aria-label="Game screen"></canvas>
+  <div class="keys" id="keys"></div>
+  <div class="settings" id="settings">
+    <button type="button" id="setBtn">SETTINGS</button>
+    <div class="binds" id="binds" hidden>
+      <button type="button" data-bind="jump"><span>JUMP</span><b></b></button>
+      <button type="button" data-bind="grab"><span>GRAB / THROW</span><b></b></button>
+      <button type="button" data-bind="drop"><span>PUT DOWN</span><b></b></button>
+      <button type="button" data-bind="bash"><span>SHIELD BASH</span><b></b></button>
+      <button type="button" id="soundBtn"><span>SOUND</span><b></b></button>
+    </div>
+  </div>
+  <div class="hud" id="hud" hidden>LEVEL 1</div>
+</main>
+
+<script>
+(() => {
+  'use strict';
+  const W = 320, H = 192, T = 16, ROWS = 12;
+  // a room is one screen wide unless its map is wider; then the camera follows the knight
+  let COLS = 20, WW = W, camX = 0;
+  const G = 0.3, JUMP = 3.95, RUN = 1.5, RUN_CARRY = 1.3, MAXFALL = 5, PUSH = 0.7;
+  const DASH_T = 11, DASH_V = 3.4, KICK_V = 3.8;
+  const CRUMBLE_T = 40, SPRING_V = 6, BAT_V = 0.8, BELT_V = 0.6;
+  const PW = 10, PH = 12;
+
+  // #  stone              -  wooden ledge (stand on it, jump up through it)
+  // ^  spikes             <  >  arrow trap firing left / right
+  // a  b  pressure plates; A  B  the portcullis each one holds open
+  // !  lever: opens every T gate for the level's timer, then they slam shut
+  // x  cracked stone: a shield bash shatters the whole column of it
+  // ~  crumbling stone: gives way soon after the knight or a crate stands on it; the floating rune block weighs nothing
+  // s  spring: launches the knight about four tiles up; a crate parked on it holds it down
+  // {  }  conveyor floor rolling left / right: it carries the knight, crates and mobs, never the floating rune block
+  // X  the way out        P  knight   c  crate   r  rune block (floats)   E  slime   g  beetle (stomp or bash it)
+  // v  bat: flies back and forth along its row; stomp it for a bounce in mid-air, or bash it
+  const LEVELS = [
+    // 1: carry the crate to the wall and climb it
+    { map: [
+      '####################',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..............X...#',
+      '#............#######',
+      '#.P.....c....#######',
+      '####################'] },
+    // 2: the crate has to hold the plate
+    { map: [
+      '####################',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............A....#',
+      '#.c...........A....#',
+      '#####.a..P....A..X.#',
+      '####################'] },
+    // 3: throw it up onto the plate on the overhang, then bash through the cracked wall
+    { map: [
+      '####################',
+      '#...........#..#...#',
+      '#...........#..#...#',
+      '#...........#..#...#',
+      '#...........#..#...#',
+      '#...........#..#...#',
+      '#...........#..#...#',
+      '#...........#..#...#',
+      '#......aaa..A..#...#',
+      '#......###..A..x...#',
+      '#.P.c.......A..x.X.#',
+      '####################'] },
+    // 4: throw the crate onto the one by the ledge, then drop off the bump onto the beetle and bounce up; arrows sweep the top of the stack
+    { period: 90, map: [
+      '####################',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#...............X..#',
+      '>.............######',
+      '#.............######',
+      '#.P.c...#.g..c######',
+      '####################'] },
+    // 5: lift the crate off the spring, ride the spring up carrying it between arrows, and use it to climb the wall
+    { period: 90, map: [
+      '####################',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#.............#....#',
+      '>.............#.X..#',
+      '#.......############',
+      '#......c############',
+      '#.P....s############',
+      '####################'] },
+    // 6: throw the crate across to squash the slime, air-bash the pit, then set the crate under the floating rune:
+    //    crate, rune, ledge
+    { map: [
+      '####################',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#................X.#',
+      '#..............#####',
+      '#.............r#####',
+      '#.P.c.......E..#####',
+      '########...###.#####'] },
+    // 7: the walkway gives way under weight: throw one crate onto the near trapdoor so the walkway survives,
+    //    carry the other out over the far plate, and keep moving
+    { map: [
+      '####################',
+      '#............#.#...#',
+      '#............#.#...#',
+      '#............#.#...#',
+      '#............#.#...#',
+      '#............#.#...#',
+      '#P.cc........A.B.X.#',
+      '#####~~~~~~~~#######',
+      '#####........#######',
+      '#####........#######',
+      '#####.a....b.#######',
+      '####################'] },
+    // 8: kick the crate into the lever from beside the spring, then spring up and race the crumbling steps to the gate
+    { timer: 170, map: [
+      '####################',
+      '#..#...............#',
+      '#..#...............#',
+      '#X.T...............#',
+      '#####..............#',
+      '#.....~............#',
+      '#.......~..........#',
+      '#.........~........#',
+      '#...........###....#',
+      '#..................#',
+      '#....!.......cP.s..#',
+      '####################'] },
+    // 9: the pit is too wide even for a bashing jump: drop onto the bat for a bounce, then bash the rest of the way
+    { map: [
+      '####################',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#.P..#v.....#....X.#',
+      '######......########'] },
+    // 10: the belt drags the crate off the plate toward the pit; the rune block doesn't ride belts, so it can stop it
+    { map: [
+      '####################',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............#....#',
+      '#.............A....#',
+      '#.P.c.r...a...A..X.#',
+      '#####}}}}}}}..######'] },
+    // 11: the lever starts the clock: pull it when the bat is where you'll need it, bounce off it over the pit,
+    //     land on the far pillar, clear the spikes and get through the gate before it drops
+    { timer: 230, map: [
+      '####################',
+      '#................#.#',
+      '#................#.#',
+      '#................#.#',
+      '#................#.#',
+      '#................#.#',
+      '#................#.#',
+      '#................#.#',
+      '#................T.#',
+      '#................T.#',
+      '#P!..#v.....#^^..TX#',
+      '######......########'] },
+    // 12: the belt runs everything back downhill: the rune block holds the crates against the ledge and is the first step;
+    //     the arrows find you while you stand on it
+    { period: 90, map: [
+      '####################',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#..................#',
+      '#................X.#',
+      '#.............######',
+      '>.............######',
+      '#P..cc..r.....######',
+      '#####{{{{{{{{{######'] },
+    // 13: the gate is too far from the lever to make it by hand: ride the crate up the spring past the bat, set it on
+    //     the belt, a slow fuse into the lever, and be waiting at the gate when it gets there
+    { timer: 110, map: [
+      '####################',
+      '#...............#..#',
+      '#...............#..#',
+      '#...............#..#',
+      '#...............#..#',
+      '#...............#..#',
+      '#...............#..#',
+      '#!..............#..#',
+      '#{{{{{{{{{{{{...T..#',
+      '#.......v.......T..#',
+      '#.P...c.......s.T.X#',
+      '####################'] },
+    // 14: hold the door with the crate (the rune keeps it on the belt's plate), then spring onto the crumbling ledge
+    //     and take its spring up before the ledge gives way, minding the bat that sweeps across it
+    { map: [
+      '####################',
+      '#...............#..#',
+      '#...............#..#',
+      '#...............#..#',
+      '#...............#..#',
+      '#...............A.X#',
+      '#.....##############',
+      '#.v.s.#............#',
+      '#..~~..............#',
+      '#..................#',
+      '#s.P..a.r..c.......#',
+      '#####}}}}}}}}}######'] },
+    // 15: the long way out, three rooms wide: squash the slime and push the crate onto the plate, bash the beetle and the
+    //     cracked wall, bounce off the bat over the pit, stop the crate on the belt's plate with the rune, pull the lever
+    //     and sprint the crumbling bridge to the gate, then spring up to the way out
+    { timer: 180, map: [
+      '############################################################',
+      '#..........#.......#.....................#..........#......#',
+      '#..........#.......#.....................#..........#......#',
+      '#..........#.......#.....................#..........#......#',
+      '#..........#.......#.....................#..........#......#',
+      '#..........#.......#.....................#..........#......#',
+      '#..........#.......#.....................#..........#......#',
+      '#..........#.......#.....................#..........#....X.#',
+      '#..........A.......#.....................#..........T...####',
+      '#..........A.......x.....................B..........T...####',
+      '#.P.c...E.aA...g...x.#v.....#cr.....b....B!.........T.s.####',
+      '######################......###}}}}}}}..####~~~.~~~#########'] }
+  ];
+
+  const cv = document.getElementById('cv');
+  const mainCtx = cv.getContext('2d');
+  let ctx = mainCtx;
+  const $ = id => document.getElementById(id);
+  const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+  const hash = (a, b, s) => { let h = (a * 374761393 + b * 668265263 + (s || 0) * 2147483647) | 0; h = (h ^ (h >>> 13)) * 1274126177 | 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+  const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  // a soft pool of light (or of darkness cut away): full strength at the centre, `mid` of it halfway out, nothing at the edge
+  function ring(c2d, x, y, r, rgb, a, mid) {
+    const g = c2d.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(' + rgb + ',' + a + ')');
+    g.addColorStop(0.5, 'rgba(' + rgb + ',' + a * (mid == null ? 0.6 : mid) + ')');
+    g.addColorStop(1, 'rgba(' + rgb + ',0)');
+    c2d.fillStyle = g; c2d.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+
+  // ---------- save ----------
+  const SAVE_KEY = 'bloxxer-v1';
+  let save = { level: 0, deaths: 0, time: 0, muted: false };
+  try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s && typeof s.level === 'number') save = Object.assign(save, s); } catch (e) {}
+  const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} };
+
+  // ---------- audio ----------
+  // One context, woken by the first click or key; everything goes through a limiter and is
+  // scheduled slightly ahead so a slow frame never makes a sound start late.
+  let ac = null, master = null, musicBus = null, noiseBuf = null;
+  function audioInit() {
+    if (!ac) {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        ac = new AC({ latencyHint: 'interactive' });
+        const limiter = ac.createDynamicsCompressor();
+        limiter.threshold.value = -12; limiter.knee.value = 10; limiter.ratio.value = 8;
+        limiter.attack.value = 0.002; limiter.release.value = 0.15;
+        master = ac.createGain(); master.gain.value = save.muted ? 0 : 0.7;
+        master.connect(limiter); limiter.connect(ac.destination);
+        musicBus = ac.createGain(); musicBus.gain.value = 0.55; musicBus.connect(master);
+        noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+        const d = noiseBuf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      } catch (e) { ac = null; return; }
+    }
+    if (ac.state !== 'running') ac.resume().catch(() => {});
+  }
+  ['pointerdown', 'mousedown', 'keydown', 'touchend'].forEach(ev => addEventListener(ev, audioInit, { capture: true, passive: true }));
+  const live = () => ac && !save.muted && ac.state === 'running';
+  function tone(f, dur, type, vol, slide, delay) {
+    if (!live()) return;
+    const t = ac.currentTime + 0.025 + (delay || 0), o = ac.createOscillator(), g = ac.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(f, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, f + slide), t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol || 0.05, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+  function noise(dur, vol, freq, delay) {
+    if (!live()) return;
+    const t = ac.currentTime + 0.025 + (delay || 0);
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = noiseBuf; f.type = 'bandpass'; f.frequency.value = freq || 1200; f.Q.value = 0.8;
+    g.gain.setValueAtTime(vol || 0.08, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(master);
+    s.start(t, Math.random() * 0.5, dur + 0.05);
+  }
+  const SFX = {
+    jump: () => tone(330, 0.08, 'square', 0.022, 240),
+    land: () => noise(0.05, 0.05, 500),
+    step: () => noise(0.02, 0.012, 900),
+    grab: () => { noise(0.06, 0.05, 700); tone(180, 0.07, 'square', 0.025, 60); },
+    throw: () => { noise(0.12, 0.05, 2200); tone(500, 0.1, 'triangle', 0.025, -250); },
+    put: () => { tone(150, 0.06, 'square', 0.03, -40); noise(0.04, 0.04, 600); },
+    thud: () => { tone(95, 0.14, 'square', 0.05, -40); noise(0.09, 0.08, 450); },
+    scrape: () => noise(0.05, 0.018, 380),
+    rune: () => { tone(880, 0.25, 'sine', 0.035, 440); tone(1320, 0.18, 'sine', 0.018, 0, 0.04); },
+    runeStop: () => { tone(1760, 0.14, 'sine', 0.03); tone(1318, 0.2, 'triangle', 0.02, 0, 0.03); },
+    plateOn: () => { tone(220, 0.05, 'square', 0.03); tone(440, 0.05, 'square', 0.02, 0, 0.03); },
+    plateOff: () => { tone(330, 0.05, 'square', 0.02); tone(165, 0.06, 'square', 0.025, 0, 0.03); },
+    doorUp: () => { noise(0.3, 0.04, 260); tone(70, 0.3, 'sawtooth', 0.025, 30); },
+    slam: () => { tone(60, 0.25, 'square', 0.06, -20); noise(0.2, 0.1, 350); tone(900, 0.06, 'square', 0.015, 0, 0.02); },
+    lever: () => { tone(600, 0.04, 'square', 0.03); noise(0.05, 0.05, 1500); tone(300, 0.08, 'square', 0.03, 0, 0.04); },
+    tick: () => tone(1500, 0.03, 'square', 0.018),
+    tock: () => tone(1100, 0.03, 'square', 0.018),
+    fire: () => { tone(700, 0.1, 'triangle', 0.035, -450); noise(0.06, 0.03, 3000); },
+    arrowWood: () => { tone(260, 0.06, 'square', 0.03, -80); noise(0.04, 0.05, 1200); },
+    arrowStone: () => { tone(2400, 0.05, 'square', 0.015); noise(0.04, 0.04, 4000); },
+    squish: () => { tone(200, 0.18, 'sine', 0.06, -150); noise(0.12, 0.06, 800); },
+    splinter: () => { noise(0.3, 0.1, 900); tone(120, 0.2, 'square', 0.04, -60); },
+    die: () => { tone(280, 0.35, 'sawtooth', 0.04, -200); noise(0.25, 0.07, 700); tone(1800, 0.08, 'square', 0.015, -600, 0.02); tone(1250, 0.4, 'triangle', 0.03, 0, 0.05); tone(1870, 0.3, 'sine', 0.02, 0, 0.05); },
+    nope: () => tone(110, 0.1, 'square', 0.03),
+    clear: () => [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 0.2, 'square', 0.028, 0, i * 0.075)),
+    select: () => tone(880, 0.05, 'square', 0.02),
+    flap: () => noise(0.04, 0.015, 1800),
+    creak: () => { noise(0.25, 0.04, 300); tone(70, 0.2, 'square', 0.02, -20); },
+    spring: () => { tone(180, 0.18, 'square', 0.035, 700); tone(360, 0.12, 'triangle', 0.02, 900, 0.03); },
+    crumble: () => { noise(0.35, 0.1, 380); tone(80, 0.25, 'square', 0.045, -35); noise(0.2, 0.05, 1500, 0.08); },
+    stomp: () => { tone(160, 0.1, 'square', 0.05, -70); noise(0.08, 0.07, 1100); tone(700, 0.08, 'square', 0.02, 400, 0.02); },
+    skitter: () => noise(0.03, 0.012, 3200),
+    bash: () => { noise(0.14, 0.06, 1600); tone(260, 0.1, 'square', 0.025, -120); },
+    kick: () => { tone(120, 0.12, 'square', 0.06, -50); noise(0.1, 0.09, 700); tone(520, 0.05, 'square', 0.02, 0, 0.01); },
+    bonk: () => { tone(400, 0.08, 'square', 0.03, -200); tone(1500, 0.05, 'square', 0.012); },
+    clang: () => { tone(2200, 0.18, 'square', 0.02, -300); tone(1500, 0.25, 'triangle', 0.025); },
+    stepHeavy: () => { noise(0.04, 0.02, 600); tone(110, 0.04, 'square', 0.012); },
+    landWood: () => { tone(180, 0.06, 'square', 0.03, -60); noise(0.04, 0.04, 900); },
+    runeGrab: () => { tone(1320, 0.12, 'sine', 0.03); tone(1760, 0.16, 'sine', 0.02, 0, 0.05); },
+    bump: () => { tone(130, 0.08, 'square', 0.04, -40); noise(0.05, 0.06, 600); },
+    clunk: () => { tone(90, 0.12, 'square', 0.045, -30); noise(0.06, 0.06, 1200); },
+    whiz: () => noise(0.12, 0.03, 4200),
+    shimmer: () => [1568, 2093, 2637].forEach((f, i) => tone(f, 0.25, 'sine', 0.014, 0, i * 0.07)),
+    slimeHop: () => tone(170 + Math.random() * 40, 0.08, 'sine', 0.02, 90),
+    slimeBonk: () => { tone(240, 0.14, 'sine', 0.035, 260); noise(0.05, 0.02, 700); },
+    crackle: () => noise(0.025, 0.012 + Math.random() * 0.01, 2500 + Math.random() * 2000),
+    tumble: () => { noise(0.5, 0.05, 220); [0, 0.07, 0.15, 0.22, 0.31].forEach(d => tone(70 + Math.random() * 30, 0.12, 'square', 0.025, -25, d)); },
+    stack: () => [0.1, 0.18, 0.27, 0.35, 0.44].forEach(d => { tone(85 + Math.random() * 25, 0.1, 'square', 0.025, -25, d); noise(0.06, 0.035, 400, d); }),
+    start: () => [523, 784, 1047].forEach((f, i) => tone(f, 0.12, 'square', 0.025, 0, i * 0.06))
+  };
+  const sfx = n => SFX[n] && SFX[n]();
+
+  // ---------- music ----------
+  // A dungeon adventure march in D minor at a brisk walk: kick, snare and ticking hats, a bouncing
+  // bass, harp arpeggios through a short echo and a reedy lead. 16 bars:
+  // A (Dm Bb F C) twice, the second time landing home; then B (Gm Dm Bb A) twice, ending on the
+  // bright A so the loop lifts back into the start. Scheduled a beat ahead.
+  const BPM = 120, STEP = 60 / BPM / 4, BARS = 16;
+  const N = {
+    F2: 87.31, G2: 98, A2: 110, Bb2: 116.54, C3: 130.81, D3: 146.83,
+    C4: 261.63, Cs4: 277.18, D4: 293.66, E4: 329.63, F4: 349.23, G4: 392, A4: 440, Bb4: 466.16,
+    C5: 523.25, Cs5: 554.37, D5: 587.33, E5: 659.25, F5: 698.46, G5: 783.99, A5: 880, Bb5: 932.33
+  };
+  const CHORDS = {
+    Dm: { root: 'D3', arp: ['D4', 'F4', 'A4', 'D5', 'F5', 'D5', 'A4', 'F4'] },
+    Bb: { root: 'Bb2', arp: ['D4', 'F4', 'Bb4', 'D5', 'F5', 'D5', 'Bb4', 'F4'] },
+    F: { root: 'F2', arp: ['C4', 'F4', 'A4', 'C5', 'F5', 'C5', 'A4', 'F4'] },
+    C: { root: 'C3', arp: ['C4', 'E4', 'G4', 'C5', 'E5', 'C5', 'G4', 'E4'] },
+    Gm: { root: 'G2', arp: ['D4', 'G4', 'Bb4', 'D5', 'G5', 'D5', 'Bb4', 'G4'] },
+    A: { root: 'A2', arp: ['Cs4', 'E4', 'A4', 'Cs5', 'E5', 'Cs5', 'A4', 'E4'] }
+  };
+  const PROG_A = ['Dm', 'Bb', 'F', 'C'], PROG_B = ['Gm', 'Dm', 'Bb', 'A'];
+  const LEAD_A = [
+    [[0, 'D5', 2], [2, 'F5', 2], [4, 'A5', 3], [7, 'G5', 1], [8, 'F5', 2], [10, 'E5', 2], [12, 'D5', 4]],
+    [[0, 'D5', 2], [2, 'F5', 2], [4, 'Bb5', 3], [7, 'A5', 1], [8, 'G5', 4], [12, 'F5', 4]],
+    [[0, 'C5', 2], [2, 'F5', 2], [4, 'A5', 2], [6, 'G5', 2], [8, 'F5', 2], [10, 'A5', 2], [12, 'C5', 4]],
+    [[0, 'E5', 3], [3, 'F5', 1], [4, 'G5', 4], [8, 'E5', 2], [10, 'D5', 2], [12, 'C5', 4]]
+  ];
+  const LEAD_A_END = [[0, 'E5', 2], [2, 'G5', 2], [4, 'A5', 4], [8, 'D5', 8]];
+  const LEAD_B = [
+    [[0, 'G5', 4], [4, 'F5', 2], [6, 'D5', 2], [8, 'Bb4', 4], [12, 'D5', 4]],
+    [[0, 'A5', 4], [4, 'F5', 2], [6, 'D5', 2], [8, 'A4', 8]],
+    [[0, 'Bb4', 2], [2, 'D5', 2], [4, 'F5', 2], [6, 'Bb5', 2], [8, 'A5', 4], [12, 'G5', 4]],
+    [[0, 'E5', 4], [4, 'Cs5', 4], [8, 'A4', 4], [12, 'E5', 4]]
+  ];
+  let echo = null;
+  function echoIn() {
+    if (echo) return echo;
+    const d = ac.createDelay(1), fb = ac.createGain(), lp = ac.createBiquadFilter(), wet = ac.createGain();
+    d.delayTime.value = STEP * 3; fb.gain.value = 0.25; lp.type = 'lowpass'; lp.frequency.value = 2200; wet.gain.value = 0.22;
+    echo = ac.createGain();
+    echo.connect(d); d.connect(lp); lp.connect(fb); fb.connect(d); lp.connect(wet); wet.connect(musicBus);
+    return echo;
+  }
+  function mEnv(g, t, attack, peak, decay) {
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(peak, t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
+  }
+  function mNoise(t, dur, vol, type, freq) {
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = noiseBuf; f.type = type; f.frequency.value = freq;
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(musicBus); s.start(t, Math.random() * 0.5, dur + 0.05);
+  }
+  function kick(t, vol) {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(48, t + 0.13);
+    mEnv(g, t, 0.003, vol, 0.22);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.3);
+  }
+  function snare(t, vol) {
+    mNoise(t, 0.12, vol, 'bandpass', 1900);
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'triangle'; o.frequency.setValueAtTime(220, t); o.frequency.exponentialRampToValueAtTime(140, t + 0.06);
+    mEnv(g, t, 0.002, vol * 0.6, 0.07);
+    o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.12);
+  }
+  function bass(f, t) {
+    const o = ac.createOscillator(), lp = ac.createBiquadFilter(), g = ac.createGain();
+    o.type = 'sawtooth'; o.frequency.setValueAtTime(f, t);
+    lp.type = 'lowpass'; lp.frequency.setValueAtTime(900, t); lp.frequency.exponentialRampToValueAtTime(220, t + 0.12);
+    mEnv(g, t, 0.004, 0.07, 0.13);
+    o.connect(lp); lp.connect(g); g.connect(musicBus); o.start(t); o.stop(t + 0.2);
+  }
+  function harp(f, t, vol) {
+    const o = ac.createOscillator(), o2 = ac.createOscillator(), g = ac.createGain(), g2 = ac.createGain();
+    o.type = 'triangle'; o2.type = 'sine';
+    o.frequency.setValueAtTime(f, t); o2.frequency.setValueAtTime(f * 2, t);
+    mEnv(g, t, 0.003, vol, 0.5);
+    g2.gain.value = 0.3;
+    o.connect(g); o2.connect(g2); g2.connect(g); g.connect(musicBus); g.connect(echoIn());
+    o.start(t); o2.start(t); o.stop(t + 0.6); o2.stop(t + 0.6);
+  }
+  // a reedy lead: square and a touch of triangle an octave up, a little vibrato on long notes
+  function lead(f, t, dur) {
+    const o = ac.createOscillator(), o2 = ac.createOscillator(), lp = ac.createBiquadFilter(), g = ac.createGain();
+    const lfo = ac.createOscillator(), depth = ac.createGain(), g2 = ac.createGain();
+    o.type = 'square'; o2.type = 'triangle';
+    o.frequency.setValueAtTime(f, t); o2.frequency.setValueAtTime(f * 2.003, t);
+    lfo.frequency.value = 5.4;
+    depth.gain.setValueAtTime(0, t); depth.gain.linearRampToValueAtTime(f * 0.008, t + Math.min(0.3, dur * 0.7));
+    lfo.connect(depth); depth.connect(o.frequency);
+    lp.type = 'lowpass'; lp.frequency.value = 2400; g2.gain.value = 0.3;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.04, t + 0.015);
+    g.gain.setValueAtTime(0.04, t + dur * 0.75); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(lp); o2.connect(g2); g2.connect(lp); lp.connect(g); g.connect(musicBus); g.connect(echoIn());
+    o.start(t); o2.start(t); lfo.start(t); o.stop(t + dur + 0.05); o2.stop(t + dur + 0.05); lfo.stop(t + dur + 0.05);
+  }
+  function playStep(i, t) {
+    const bar = Math.floor(i / 16), s = i % 16, section = Math.floor(bar / 4), bb = bar % 4;
+    const chord = CHORDS[(section < 2 ? PROG_A : PROG_B)[bb]], root = N[chord.root];
+    // bass: eighth notes, jumping up the octave on the offbeat of 2 and 4
+    if (s % 2 === 0) bass(root * (s === 6 || s === 14 ? 2 : 1), t);
+    if (s === 0 || s === 8 || (s === 10 && bb % 2)) kick(t, 0.15);
+    if (s === 4 || s === 12) snare(t, 0.06);
+    if (s % 2 === 0) mNoise(t, 0.025, s % 4 === 2 ? 0.02 : 0.01, 'highpass', 7500);
+    if (s === 14) mNoise(t, 0.09, 0.014, 'highpass', 6000);
+    if (bar === BARS - 1 && s >= 12) snare(t, 0.03 + (s - 12) * 0.012);
+    if (s % 2 === 0) harp(N[chord.arp[s / 2]], t, section % 2 ? 0.032 : 0.024);
+    let notes;
+    if (section === 0) notes = LEAD_A[bb];
+    else if (section === 1) notes = bb === 3 ? LEAD_A_END : LEAD_A[bb];
+    else notes = LEAD_B[bb];
+    for (const [at, n, len] of notes) if (at === s) lead(N[n], t, len * STEP * 0.92);
+  }
+  let mNext = 0, mStep = 0;
+  function music() {
+    if (!live()) { mNext = 0; return; }
+    const now = ac.currentTime;
+    if (mNext < now + 0.01) mNext = now + 0.06;
+    while (mNext < now + 0.25) { playStep(mStep, mNext); mStep = (mStep + 1) % (BARS * 16); mNext += STEP; }
+  }
+
+  // ---------- input ----------
+  // Jump, grab and put-down can be rebound in the title-screen settings; the rest stay put.
+  const FIXED = {
+    ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right', ArrowUp: 'jump',
+    ArrowDown: 'drop', KeyR: 'restart', Enter: 'confirm', Escape: 'menu'
+  };
+  const KEYS_KEY = 'bloxxer-keys';
+  let binds = { jump: 'KeyW', grab: 'Space', drop: 'KeyS', bash: 'Shift' };
+  try { const b = JSON.parse(localStorage.getItem(KEYS_KEY)); if (b && b.jump && b.grab && b.drop) binds = Object.assign(binds, b); } catch (e) {}
+  const norm = code => /^(Shift|Control|Alt|Meta)(Left|Right)$/.test(code) ? code.replace(/(Left|Right)$/, '') : code;
+  function actionFor(code) {
+    const c = norm(code);
+    for (const a in binds) if (binds[a] === c) return a;
+    return FIXED[code];
+  }
+  function keyName(c) {
+    if (c === 'Space') return 'SPACE';
+    const mouse = { Mouse0: 'LEFT CLICK', Mouse1: 'MIDDLE CLICK', Mouse2: 'RIGHT CLICK' };
+    if (mouse[c]) return mouse[c];
+    if (/^Mouse\d$/.test(c)) return 'MOUSE ' + c.slice(5);
+    if (/^Key.$/.test(c)) return c.slice(3);
+    if (/^Digit.$/.test(c)) return c.slice(5);
+    const arrows = { ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→' };
+    if (arrows[c]) return arrows[c];
+    if (c === 'Control') return 'CTRL';
+    return c.replace(/^Numpad/, 'NUM ').replace(/([a-z])([A-Z])/g, '$1 $2').toUpperCase();
+  }
+  const down = {}, pressed = {};
+  function press(a) { if (!down[a]) pressed[a] = true; down[a] = true; }
+  function release(a) { down[a] = false; }
+  let listening = null, settingsOpen = false;
+  addEventListener('keydown', e => {
+    if (listening) {
+      e.preventDefault();
+      if (e.code !== 'Escape') setBind(listening, norm(e.code));
+      listenFor(null);
+      return;
+    }
+    if (settingsOpen && e.code === 'Escape') { openSettings(false); return; }
+    const a = actionFor(e.code);
+    if (!a) return;
+    if (FIXED[e.code] === a && (e.ctrlKey || e.metaKey || e.altKey)) return;
+    e.preventDefault();
+    if (!e.repeat) press(a);
+  });
+  addEventListener('keyup', e => { const a = actionFor(e.code); if (a) { e.preventDefault(); release(a); } });
+  addEventListener('mousedown', e => {
+    const code = 'Mouse' + e.button, onButton = e.target.closest && e.target.closest('button');
+    if (listening) {
+      if (e.target.closest && e.target.closest('#settings')) return;
+      e.preventDefault(); setBind(listening, code); listenFor(null);
+      return;
+    }
+    if (onButton) return;
+    const a = actionFor(code);
+    if (a) { e.preventDefault(); press(a); }
+  });
+  addEventListener('mouseup', e => { const a = actionFor('Mouse' + e.button); if (a) release(a); });
+  addEventListener('contextmenu', e => { if (Object.values(binds).includes('Mouse2')) e.preventDefault(); });
+  addEventListener('blur', () => { for (const a in down) down[a] = false; });
+  cv.addEventListener('pointerdown', () => { if ((scene === 'title' && !settingsOpen) || scene === 'end') press('confirm'); });
+  addEventListener('pointerup', () => release('confirm'));
+
+  // ---------- settings ----------
+  function setBind(action, code) {
+    // taking a key another action already uses hands that action this one's old key
+    for (const a in binds) if (a !== action && binds[a] === code) binds[a] = binds[action];
+    binds[action] = code;
+    try { localStorage.setItem(KEYS_KEY, JSON.stringify(binds)); } catch (e) {}
+    renderBinds();
+  }
+  function listenFor(action) { listening = action; renderBinds(); }
+  function renderBinds() {
+    document.querySelectorAll('#binds button[data-bind]').forEach(b => {
+      const a = b.dataset.bind, on = listening === a;
+      b.classList.toggle('listen', on);
+      b.querySelector('b').textContent = on ? 'PRESS A KEY' : keyName(binds[a]);
+    });
+    $('soundBtn').querySelector('b').textContent = save.muted ? 'OFF' : 'ON';
+    $('keys').innerHTML = '';
+    [['← →', 'MOVE'], [keyName(binds.jump), 'JUMP'], [keyName(binds.grab), 'GRAB · THROW'], [keyName(binds.drop), 'PUT DOWN'], [keyName(binds.bash), 'BASH'], ['R', 'RETRY']].forEach(([key, what]) => {
+      const s = document.createElement('span'), b = document.createElement('b');
+      b.textContent = key; s.append(b, what); $('keys').append(s);
+    });
+  }
+  function openSettings(open) {
+    settingsOpen = open;
+    $('binds').hidden = !open;
+    $('setBtn').textContent = open ? 'BACK' : 'SETTINGS';
+    listenFor(null);
+    for (const a in down) down[a] = false;
+  }
+  $('setBtn').addEventListener('click', e => { openSettings(!settingsOpen); sfx('select'); e.currentTarget.blur(); });
+  document.querySelectorAll('#binds button[data-bind]').forEach(b => b.addEventListener('click', e => {
+    listenFor(listening === b.dataset.bind ? null : b.dataset.bind); sfx('select'); e.currentTarget.blur();
+  }));
+  $('soundBtn').addEventListener('click', e => {
+    save.muted = !save.muted; persist();
+    if (master) master.gain.setTargetAtTime(save.muted ? 0 : 0.7, ac.currentTime, 0.02);
+    renderBinds(); sfx('select'); e.currentTarget.blur();
+  });
+
+  // ---------- sprites ----------
+  // Chunky cartoon pixel art: pure black outlines, big heads, bright saturated colour, a white glint on everything.
+  const PAL = {
+    h: '#e6e9ee', H: '#ffffff', d: '#7c8592', D: '#4e5664', k: '#101014', m: '#b4bac4', v: '#14161c',
+    b: '#e8443a', B: '#a8231e', y: '#ffc93a', Y: '#d98c1c', l: '#2a2c34', r: '#e8443a', R: '#a8231e',
+    s: '#5fd84c', S: '#2f9a3a', V: '#1b5e26', W: '#c4ffa8', w: '#ffffff',
+    q: '#5b4a86', Q: '#8f7cc4', z: '#2e2448', n: '#3a2f52', N: '#6b5a96', e: '#ff5a3a'
+  };
+  const OUT = '#000000';
+  function sprite(rows, outline) {
+    const h = rows.length, w = rows[0].length, c = mk(w + 2, h + 2), x = c.getContext('2d');
+    const op = (i, j) => j >= 0 && j < h && i >= 0 && i < w && rows[j][i] !== '.';
+    for (let j = -1; j <= h; j++) for (let i = -1; i <= w; i++) {
+      if (op(i, j)) { x.fillStyle = PAL[rows[j][i]] || '#f0f'; x.fillRect(i + 1, j + 1, 1, 1); }
+      else if (outline && (op(i - 1, j) || op(i + 1, j) || op(i, j - 1) || op(i, j + 1))) { x.fillStyle = outline; x.fillRect(i + 1, j + 1, 1, 1); }
+    }
+    return c;
+  }
+  function flipped(c) { const f = mk(c.width, c.height), x = f.getContext('2d'); x.translate(c.width, 0); x.scale(-1, 1); x.drawImage(c, 0, 0); return f; }
+
+  // The knight, facing right: a crimson plume curling back off a big domed helm with a T-shaped
+  // visor, gold pauldrons, a steel breastplate, gold-buckled belt and a short blue tabard. 13x18;
+  // the plume and helm stand above his 10x12 body box.
+  const HEAD = [
+    '...rrrr......',
+    '..rRRRrr.....',
+    '.rR....rr....',
+    'rR......r....',
+    '....dmhhhd...',
+    '...dmhHHhhd..',
+    '..dmhHHhhhhd.',
+    '..dmhhhvvvvvd',
+    '..Ddmhhhhvhhd',
+    '..DDdmhhhvhd.',
+    '...DDddmmmd..'
+  ];
+  const BLINK = HEAD;
+  const BODY = {
+    idle: ['.YyyDmhhmdyY.', 'YyyYDmhHmdYyY', '.hm.lllyll.mh', '.mD.bByBb.Dm.', '....bByBb....'],
+    carry: ['.YyyDmhhmdyY.', 'YyyYDmhHmdYyY', '....lllyll...', '....bByBb....', '....bByBb....'],
+    throw: ['.YyyDmhhmdyY.', 'YyyYDmhHmdYyY', '.hm.lllyllmhh', '.mD.bByBb....', '....bByBb....']
+  };
+  const LEGS = {
+    stand: ['....mh.hm....', '...DDD.DDD...'],
+    run0: ['...mh...hm...', '..DDD...DDD..'],
+    run1: ['....mhhm.....', '....DDDD.....'],
+    run2: ['.....mh.hm...', '....DDD.DDD..'],
+    run3: ['.....mhhm....', '.....DDDD....'],
+    jump: ['....mh.hm....', '....DD.DD....'],
+    fall: ['...mh...hm...', '...DD...DD...']
+  };
+  // the carrying pose: arms run up the sides of the helm to the crate
+  const CARRY_HEAD = HEAD.map((r, i) => i >= 8 ? 'h' + r.slice(1, 12) + 'h' : r);
+  const PF = {};
+  function buildPlayerFrames() {
+    for (const leg in LEGS) for (const pose in BODY) for (const blink of [0, 1]) {
+      const head = pose === 'carry' ? CARRY_HEAD : blink ? BLINK : HEAD;
+      const s = sprite([...head, ...BODY[pose], ...LEGS[leg]], OUT);
+      PF[leg + pose + blink] = [s, flipped(s)];
+    }
+  }
+  // a grinning green blob with big round eyes
+  const SLIME = [
+    sprite(['....ssss....', '..sWWsssss..', '.sWWsssssssS', '.swwwsswwwsS', 'sswwkssswwkS', 'sswwkssswwkS', 'SssssssssSSV', '.SSSSSSSSSV.', '..VVVVVVVV..'], OUT),
+    sprite(['............', '...sWWssss..', '.sWWssssssS.', 'sswwwsswwwsS', 'sswwksswwkSS', 'sswwksswwkSS', 'SssssssssSSV', 'SSSSSSSSSSSV', '.VVVVVVVVVV.'], OUT)
+  ];
+  const SLIME_F = SLIME.map(flipped);
+  // a dungeon beetle, facing right: a domed violet shell, a little head with one gold eye, scuttling legs
+  const BEETLE_TOP = ['...zzzzz....', '..zqQQqqz...', '.zqQqqqqqzk.', '.zqqqqqqqzkk', 'zzqqqqqqqzyk', '.zzzzzzzzzkk'];
+  const BEETLE = [
+    sprite([...BEETLE_TOP, '..k.k..k.k..', '.k.k..k.k...'], OUT),
+    sprite([...BEETLE_TOP, '..k..k.k..k.', '...k..k..k..'], OUT)
+  ];
+  const BEETLE_F = BEETLE.map(flipped);
+  // a bat, facing right: a round dusky body, two ember eyes and wings that beat up and down
+  const BAT = [
+    sprite(['n..........n', 'nn..nnnn..nn', 'nNn.nNNn.nNn', '.nNnNeNenNn.', '..nnNNNNnn..', '....nNNn....', '.....nn.....'], OUT),
+    sprite(['............', '....nnnn....', '...nNNNNn...', 'nnnnNeNennnn', 'nNNnNNNNnNNn', 'n..nnNNnn..n', '.....nn.....'], OUT)
+  ];
+  const BAT_F = BAT.map(flipped);
+
+  // A crate: bright planks, a fat diagonal brace, riveted iron corners, a black outline.
+  function crateImg() {
+    const c = mk(T, T), x = c.getContext('2d'), f = (col, a, b, w, h) => { x.fillStyle = col; x.fillRect(a, b, w, h); };
+    f('#000000', 0, 0, 16, 16);
+    for (let i = 0; i < 3; i++) { const yy = 1 + i * 5; f(['#d48a3e', '#c47a32', '#d48a3e'][i], 1, yy, 14, 5); f('#f0b066', 1, yy, 14, 1); f('#7a4218', 1, yy + 4, 14, 1); }
+    for (let i = 0; i < 12; i++) { f('#7a4218', 2 + i, 13 - i, 2, 2); f('#f0b066', 2 + i, 12 - i, 1, 1); }
+    f('#ffe0a8', 2, 2, 3, 1); f('#ffe0a8', 2, 2, 1, 2);
+    for (const [a, b] of [[1, 1], [11, 1], [1, 11], [11, 11]]) {
+      f('#000000', a, b, 4, 4); f('#c9d0da', a, b, 3, 3); f('#ffffff', a, b, 1, 1); f('#6a7280', a + 1, b + 1, 1, 1);
+    }
+    return c;
+  }
+  const CRATE = crateImg();
+  // A rune block: a squat slab of blue-grey stone, a carved glyph that glows while it floats.
+  function runeImg() {
+    const c = mk(T, T), x = c.getContext('2d'), f = (col, a, b, w, h) => { x.fillStyle = col; x.fillRect(a, b, w, h); };
+    f('#000000', 0, 0, 16, 16);
+    f('#4a5a86', 1, 1, 14, 14); f('#6e80b0', 1, 1, 14, 2); f('#6e80b0', 1, 1, 2, 14);
+    f('#33406a', 13, 3, 2, 12); f('#33406a', 3, 13, 12, 2);
+    f('#ffffff', 2, 2, 2, 1); f('#ffffff', 2, 2, 1, 2);
+    f('#2a3458', 4, 4, 8, 8);
+    return c;
+  }
+  const RUNE = runeImg();
+  // the glyph: a little four-pointed star inside a ring of cuts
+  const GLYPH = [[7, 3], [8, 3], [7, 4], [8, 4], [7, 11], [8, 11], [7, 12], [8, 12], [3, 7], [3, 8], [4, 7], [4, 8], [11, 7], [11, 8], [12, 7], [12, 8], [6, 6], [9, 6], [6, 9], [9, 9], [7, 7], [8, 7], [7, 8], [8, 8], [5, 5], [10, 5], [5, 10], [10, 10]];
+
+  // ---------- world ----------
+  let scene = 'title', menuSel = 0, lastScene = '';
+  let L, grid, p, carry, levelIdx = 0, lt = 0;
+  let blocks = [], slimes = [], arrows = [], traps = [], doors = [], doorMap = [], plates = [], levers = [], exits = [], springs = [], crumbles = [];
+  let parts = [], torches = [];
+  let timer = 0, plateState = {};
+  let mode = 'play', modeT = 0, tick = 0, shake = 0, flashT = 0, hitstop = 0, iris = 1, irisDir = 0;
+  let levelTime = 0;
+  const tileLayer = mk(W, H), bgLayer = mk(W, H), lightLayer = mk(W, H), vignette = mk(W, H), dark = mk(W, H);
+  // the world-sized layers grow and shrink with the room
+  const sizeWorld = () => { for (const c of [tileLayer, bgLayer, lightLayer, dark]) if (c.width !== WW) c.width = WW; };
+  const lctx = lightLayer.getContext('2d');
+
+  const tileAt = (c, r) => (c < 0 || c >= COLS || r < 0) ? '#' : r >= ROWS ? '.' : grid[r][c];
+  const isBelt = ch => ch === '{' || ch === '}';
+  const isDoor = ch => ch === 'A' || ch === 'B' || ch === 'T';
+  const isStone = ch => ch === '#' || ch === '<' || ch === '>' || ch === 'x';
+  function tileSolid(c, r) {
+    const ch = tileAt(c, r);
+    if (isStone(ch) || ch === '~' || isBelt(ch)) return true;
+    if (isDoor(ch)) return doorMap[r][c].amt < 0.98;
+    return false;
+  }
+  // every solid thing except `self`; oldBottom lets wooden ledges hold only what comes down onto them
+  function hitWorld(x, y, w, h, self, oldBottom) {
+    const c0 = Math.floor(x / T), c1 = Math.floor((x + w - 0.001) / T);
+    const r0 = Math.floor(y / T), r1 = Math.floor((y + h - 0.001) / T);
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+      if (tileSolid(c, r)) return true;
+      // bats keep to their side of a door or gate even while it stands open
+      if (self && self.fly && isDoor(tileAt(c, r))) return true;
+      if (tileAt(c, r) === '-' && oldBottom != null && oldBottom <= r * T + 0.01 && y + h > r * T) return true;
+    }
+    const box = { x, y, w, h };
+    for (const b of blocks) if (b !== self && b !== carry && !b.dead && overlap(box, b)) return true;
+    if (self !== p && self !== carry && !(self && self.slime) && p && mode !== 'dead') {
+      if (overlap(box, p)) return true;
+      if (carry && overlap(box, carryBox(p.x, p.y))) return true;
+    }
+    return false;
+  }
+  const carryBox = (x, y) => ({ x: x + PW / 2 - 8, y: y - T, w: T, h: T });
+  function blockedAt(e, x, y) {
+    if (hitWorld(x, y, e.w, e.h, e, e.y + e.h)) return true;
+    if (e === p && carry) { const cb = carryBox(x, y); if (hitWorld(cb.x, cb.y, cb.w, cb.h, carry, p.y)) return true; }
+    return false;
+  }
+  // move one pixel at a time so nothing ever tunnels or overlaps; returns true on a hit
+  function moveAxis(e, d, axis) {
+    const s = Math.sign(d); let rem = Math.abs(d);
+    while (rem > 0.0001) {
+      const st = Math.min(1, rem);
+      const nx = axis === 'x' ? e.x + s * st : e.x, ny = axis === 'y' ? e.y + s * st : e.y;
+      if (blockedAt(e, nx, ny)) { e.rem = s * rem; return true; }
+      e.x = nx; e.y = ny; rem -= st;
+    }
+    return false;
+  }
+  // the block you carry never holds you up: if it comes down on a corner or another block while your own feet
+  // are in the air, you slip clear of it, and where there's no room to slip, you lose your grip and it stays put
+  function slipCarry() {
+    if (!carry || hitWorld(p.x, p.y + 1, PW, PH, p, p.y + PH)) return false;
+    for (let d = 1; d <= 4; d++) for (const s of [-1, 1]) if (!blockedAt(p, p.x + s * d, p.y) && !blockedAt(p, p.x + s * d, p.y + 1)) { p.x += s * d; return true; }
+    const b = carry, cb = carryBox(p.x, p.y);
+    b.x = cb.x; b.y = cb.y; b.vx = 0; b.vy = 0; b.fly = 0; b.lift = 1; b.settle = b.kind === 'crate';
+    carry = null; p.throwT = 6; sfx('put');
+    if (b.kind === 'rune') snapRune(b);
+    return true;
+  }
+  // only the knight's own feet count as standing, never the block over his head
+  const onGround = e => e === p ? hitWorld(p.x, p.y + 1, PW, PH, p, p.y + PH) : blockedAt(e, e.x, e.y + 1);
+  function somethingOnTop(b) {
+    const strip = { x: b.x + 1, y: b.y - 1, w: b.w - 2, h: 1 };
+    if (blocks.some(o => o !== b && o !== carry && !o.dead && overlap(strip, o))) return true;
+    return overlap(strip, p);
+  }
+
+  function loadLevel(i, fresh, preview) {
+    levelIdx = i;
+    L = LEVELS[i];
+    grid = L.map.map(row => row.split(''));
+    COLS = L.map[0].length; WW = COLS * T; sizeWorld();
+    blocks = []; slimes = []; arrows = []; traps = []; doors = []; plates = []; levers = []; exits = []; parts = []; springs = []; crumbles = [];
+    doorMap = grid.map(row => row.map(() => null));
+    carry = null; timer = 0; plateState = {}; lt = 0;
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const ch = grid[r][c], x = c * T, y = r * T;
+      if (ch === 'P') { p = { x: x + 3, y: y + T - PH, w: PW, h: PH, vx: 0, vy: 0, face: 1, ground: true, coyote: 0, buffer: 0, walk: 0, throwT: 0, squash: 0, plume: [], stepT: 0, dashT: 0, canDash: true, trail: [] }; grid[r][c] = '.'; }
+      else if (ch === 'c' || ch === 'r') { blocks.push({ kind: ch === 'c' ? 'crate' : 'rune', x, y, w: T, h: T, vx: 0, vy: 0, ground: false, fly: 0, settle: false, lift: 1, sq: 0, ph: c + r }); grid[r][c] = '.'; }
+      else if (ch === 'E') { slimes.push({ type: 'slime', slime: true, x: x + 2, y: y + T - 9, w: 12, h: 9, vy: 0, dir: 1, alive: true, t: c, dieT: 0 }); grid[r][c] = '.'; }
+      else if (ch === 'v') { slimes.push({ type: 'bat', slime: true, fly: true, x: x + 2, y: y + 4, w: 12, h: 8, by: y + 4, vy: 0, dir: c < COLS / 2 ? 1 : -1, alive: true, t: c * 7, dieT: 0 }); grid[r][c] = '.'; }
+      else if (ch === 'g') { slimes.push({ type: 'beetle', slime: true, x: x + 2, y: y + T - 8, w: 12, h: 8, vy: 0, dir: c < COLS / 2 ? 1 : -1, alive: true, t: c, dieT: 0 }); grid[r][c] = '.'; }
+      else if (ch === 'X') { exits.push({ c, r, x: x + 2, y: y - 12, w: 12, h: 28 }); grid[r][c] = '.'; }
+      else if (ch === '!') { levers.push({ c, r, x: x + 3, y: y + 2, w: 10, h: 12, occ: false, flip: 0 }); grid[r][c] = '.'; }
+      else if (ch === 'a' || ch === 'b') { plates.push({ c, r, ch, x: x + 1, y: y + 11, w: 14, h: 5, on: false, sink: 0 }); grid[r][c] = '.'; }
+      else if (ch === 's') { springs.push({ c, r, x: x + 1, y: y + 11, t: 0 }); grid[r][c] = '.'; }
+      else if (ch === '~') crumbles.push({ c, r, t: 0, gone: false });
+      else if (ch === '<' || ch === '>') traps.push({ c, r, dir: ch === '>' ? 1 : -1, warn: 0 });
+      else if (isDoor(ch)) { const d = { c, r, ch, amt: 0 }; doors.push(d); doorMap[r][c] = d; }
+    }
+    for (const t2 of traps) t2.ph = (t2.r * 7 + t2.c * 3) % 20;
+    for (let i2 = 0; i2 < 5; i2++) p.plume.push({ x: p.x + 3, y: p.y });
+    p.face = p.x < WW / 2 ? 1 : -1;
+    camX = camTarget();
+    mode = 'play'; modeT = 0; shake = 0; flashT = 0; hitstop = 0;
+    iris = preview ? 1 : 0; irisDir = preview ? 0 : 1;
+    for (const a in pressed) pressed[a] = false;
+    bakeTiles(); bakeBackground(); placeDecor(); bakeDark();
+    if (!preview) $('hud').textContent = 'LEVEL ' + (i + 1);
+    if (fresh) levelTime = 0;
+    if (!preview) sfx('tumble');
+    exitNear = false;
+  }
+  const camTarget = () => Math.max(0, Math.min(WW - W, p.x + PW / 2 - W / 2));
+  function respawn() { loadLevel(levelIdx, false); }
+
+  // ---------- particles ----------
+  function burst(x, y, n, colors, speed, o) {
+    o = o || {};
+    for (let i = 0; i < n; i++) {
+      const a = o.angle != null ? o.angle + (Math.random() - 0.5) * (o.spread || 1) : Math.random() * Math.PI * 2;
+      const s = speed * (0.35 + Math.random() * 0.9);
+      parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0, max: (o.life || 30) * (0.6 + Math.random() * 0.7),
+        g: o.g != null ? o.g : 0.12, c: colors[(Math.random() * colors.length) | 0], s: o.size || 1, drag: o.drag || 1, chip: !!o.chip });
+    }
+  }
+  const DUST = ['#5f5870', '#7a7390', '#47425a'];
+  function dust(x, y, n) { burst(x, y, n, DUST, 0.7, { angle: -Math.PI / 2, spread: 2.6, g: 0.02, life: 22, drag: 0.92 }); }
+  const WOOD = ['#8a5a30', '#c48a50', '#5a3518', '#a8723e'];
+  function splinter(b) {
+    b.dead = true;
+    burst(b.x + 8, b.y + 8, 30, b.kind === 'crate' ? WOOD : ['#3c3a5c', '#7fe8f0', '#5c5a86'], 2, { life: 40, g: 0.15, chip: true });
+    shake = Math.max(shake, 5); sfx('splinter');
+  }
+  function updateParticles() {
+    for (const q of parts) { q.life++; q.vx *= q.drag; q.vy = q.vy * q.drag + q.g; q.x += q.vx; q.y += q.vy; }
+    if (parts.length > 700) parts.splice(0, parts.length - 700);
+    parts = parts.filter(q => q.life < q.max);
+  }
+
+  // ---------- blocks ----------
+  function frontCol() { return p.face > 0 ? Math.floor((p.x + PW - 0.001) / T) + 1 : Math.floor(p.x / T) - 1; }
+  function fits(b, x, y) {
+    const ox = b.x, oy = b.y; b.x = x; b.y = y;
+    const ok = !hitWorld(x, y, T, T, b) && !overlap(b, p) && !slimes.some(sl => sl.alive && overlap(b, sl));
+    b.x = ox; b.y = oy;
+    return ok;
+  }
+  function grab() {
+    if (carry) return throwBlock();
+    const zone = { x: p.face > 0 ? p.x + PW - 1 : p.x - 9, y: p.y - 2, w: 10, h: PH + 1 };
+    let best = null, bd = 1e9;
+    for (const b of blocks) {
+      if (b.dead || !overlap(zone, b)) continue;
+      const d = Math.abs(b.x + 8 - (p.x + 5));
+      if (d < bd) { bd = d; best = b; }
+    }
+    if (!best || somethingOnTop(best)) return sfx('nope');
+    const cb = carryBox(p.x, p.y);
+    carry = best;
+    if (hitWorld(cb.x, cb.y, cb.w, cb.h, best, null)) { carry = null; return sfx('nope'); }
+    best.fromX = best.x; best.fromY = best.y; best.lift = 0;
+    best.vx = 0; best.vy = 0; best.fly = 0; best.settle = false;
+    p.throwT = 8; sfx(best.kind === 'rune' ? 'runeGrab' : 'grab');
+  }
+  function throwBlock() {
+    const b = carry, cb = carryBox(p.x, p.y);
+    if (b.kind === 'crate') {
+      b.x = cb.x; b.y = cb.y; b.vx = p.face * 2.2 + p.vx * 0.4; b.vy = -4.1; b.ground = false; b.settle = true;
+      carry = null; p.throwT = 10; sfx('throw');
+      return;
+    }
+    // a rune block is slid out at your feet and glides level until it meets something
+    const x = p.face > 0 ? p.x + PW + 0.5 : p.x - T - 0.5, y = p.y + PH - T;
+    if (!fits(b, x, y)) return sfx('nope');
+    b.x = x; b.y = y; b.vx = p.face * 3; b.vy = 0; b.fly = 48;
+    carry = null; p.throwT = 10; sfx('rune');
+  }
+  function putDown() {
+    if (!carry) return;
+    const b = carry;
+    const base = b.kind === 'rune' ? Math.round((p.y + PH - T) / T) * T : p.y + PH - T;
+    // the column ahead, or, hard up against a wall, the column you're half in (stepping back to make room)
+    const near = Math.floor((p.x + 5) / T) * T;
+    for (const [x, y] of [[frontCol() * T, base], [near, base], [frontCol() * T, base - T], [near, base - T]]) {
+      if (hitWorld(x, y, T, T, b, null)) continue;
+      if (overlap({ x, y, w: T, h: T }, p)) {
+        const nx = p.face > 0 ? x - PW - 0.01 : x + T + 0.01;
+        if (Math.abs(nx - p.x) > 14 || blockedAt(p, nx, p.y)) continue;
+        p.x = nx;
+      }
+      b.x = x; b.y = y; b.vx = 0; b.vy = 0; b.fly = 0; b.settle = false; b.sq = 3;
+      carry = null; p.throwT = 6; sfx('put');
+      return;
+    }
+    sfx('nope');
+  }
+  function snapRune(b) {
+    const rx = Math.round(b.x / T) * T, ry = Math.round(b.y / T) * T;
+    for (const [x, y] of [[rx, ry], [Math.floor(b.x / T) * T, ry], [Math.ceil(b.x / T) * T, ry]]) if (fits(b, x, y)) { b.tx = x; b.ty = y; break; }
+    b.fly = 0; b.vx = 0; sfx('runeStop');
+    burst(b.x + 8, b.y + 8, 10, ['#7fe8f0', '#e6fdff', '#3fb8c8'], 1.1, { g: 0, life: 24, drag: 0.9 });
+  }
+  function updateBlocks() {
+    for (const b of blocks) {
+      if (b.dead || b === carry) continue;
+      if (b.lift < 1) b.lift = 1;
+      if (b.sq > 0) b.sq--;
+      if (b.kind === 'rune') {
+        if (b.fly > 0) {
+          const st = Math.min(Math.abs(b.vx), b.fly);
+          const hit = moveAxis(b, Math.sign(b.vx) * st, 'x');
+          b.fly -= st;
+          if (tick % 2 === 0) parts.push({ x: b.x + 8 - Math.sign(b.vx) * 8, y: b.y + 4 + Math.random() * 8, vx: 0, vy: 0, life: 0, max: 14, g: 0, c: '#7fe8f0', s: 1, drag: 1 });
+          if (hit || b.fly <= 0) snapRune(b);
+        } else if (b.tx != null) {
+          b.x += (b.tx - b.x) * 0.35; b.y += (b.ty - b.y) * 0.35;
+          if (Math.abs(b.tx - b.x) < 0.3 && Math.abs(b.ty - b.y) < 0.3) { b.x = b.tx; b.y = b.ty; b.tx = null; }
+        }
+        continue;
+      }
+      const vy0 = b.vy;
+      b.vy = Math.min(b.vy + G, MAXFALL);
+      if (b.vx && moveAxis(b, b.vx, 'x')) { if (Math.abs(b.vx) > 1) { sfx('bump'); dust(b.x + (b.vx > 0 ? T : 0), b.y + 8, 3); } b.vx = 0; }
+      const hitY = moveAxis(b, b.vy, 'y');
+      const was = b.ground;
+      b.ground = false;
+      if (hitY) {
+        if (b.vy > 0) {
+          b.ground = true;
+          // come to rest on a whole pixel so a crate always fits a one-tile gap
+          // (down onto the surface if that fits, so it never hangs a fraction of a pixel above it)
+          { const sy = [Math.ceil(b.y - 0.001), Math.round(b.y)].find(y => y === b.y || !blockedAt(b, b.x, y)); if (sy != null) b.y = sy; }
+          if (vy0 > 2.2) { sfx('thud'); dust(b.x + 8, b.y + T, 6); shake = Math.max(shake, 2); b.sq = 4; }
+        }
+        b.vy = 0;
+      }
+      // a pushed crate finishes sliding into the next grid column once you let go, so stacks always line up
+      if (b.pushT > 0) b.pushT--;
+      else if (b.pushDir) {
+        const tx = b.pushDir > 0 ? Math.ceil(b.x / T - 0.001) * T : Math.floor(b.x / T + 0.001) * T;
+        if (Math.abs(tx - b.x) < 0.01) { b.x = tx; b.pushDir = 0; }
+        else {
+          const st = Math.sign(tx - b.x) * Math.min(PUSH, Math.abs(tx - b.x));
+          if (!b.ground || slimes.some(sl => sl.alive && overlap({ x: b.x + st, y: b.y, w: T, h: T }, sl)) || moveAxis(b, st, 'x')) { b.pushDir = 0; b.settle = true; }
+        }
+      }
+      if (b.ground) {
+        b.vx *= b.kicked ? 0.975 : 0.6;
+        if (b.kicked && Math.abs(b.vx) < 0.5) b.kicked = false;
+        if (!b.kicked && Math.abs(b.vx) < 0.15) b.vx = 0;
+        // a crate balanced on a corner with nothing under its middle tips off toward the open side
+        if (!b.kicked && !b.pushDir && !b.vx && !hitWorld(b.x + 6, b.y + 1, 4, T, b, b.y + T)) {
+          const l = hitWorld(b.x, b.y + 1, 8, T, b, b.y + T), r = hitWorld(b.x + 8, b.y + 1, 8, T, b, b.y + T);
+          const gx = Math.round(b.x / T) * T;
+          // within a hair of a grid column it squares up first, so it drops cleanly into a hole exactly its width
+          if (gx !== b.x && Math.abs(gx - b.x) <= 0.5 && !blockedAt(b, gx, b.y)) b.x = gx;
+          else if (l !== r) {
+            // wedged against a neighbour, it can still come off a sliver of a pixel by squaring up to the whole pixel
+            if (moveAxis(b, l ? 0.5 : -0.5, 'x')) { const nx = l ? Math.ceil(b.x) : Math.floor(b.x); if (nx !== b.x && !blockedAt(b, nx, b.y)) b.x = nx; }
+            b.settle = false;
+          }
+        }
+        if (b.kicked && tick % 6 === 0) { dust(b.x + 8, b.y + T, 1); sfx('scrape'); }
+        // thrown or dropped crates come to rest square on the grid, as long as they stay supported there
+        if (!b.vx && b.settle) {
+          const tx = [Math.round(b.x / T) * T, Math.floor(b.x / T) * T, Math.ceil(b.x / T) * T].find(x => fits(b, x, b.y) && hitWorld(x + 1, b.y + 1, T - 2, T, b, null));
+          if (tx == null || Math.abs(tx - b.x) < 0.3) { if (tx != null) b.x = tx; b.settle = false; }
+          else b.x += Math.sign(tx - b.x) * Math.min(1, Math.abs(tx - b.x));
+        }
+      }
+      if (!was && b.ground && b.settle === false && Math.abs(b.vx) < 0.01) {}
+      if (b.y > H + 20) b.dead = true;
+    }
+  }
+
+  // ---------- player ----------
+  // Shield bash: a short level dash, on the ground or once per jump in the air. What it hits decides
+  // the rest: a crate gets kicked sliding, cracked stone shatters, anything else just stops you.
+  function dashStep() {
+    p.dashT--;
+    p.vx = p.face * DASH_V; p.vy = 0;
+    p.trail.push({ x: p.x, y: p.y, life: 0 });
+    if (moveAxis(p, p.vx, 'x')) bashInto();
+    if (!p.dashT) p.vx = 0;
+  }
+  function bashInto() {
+    const probe = { x: p.face > 0 ? p.x + PW : p.x - 4, y: p.y + 1, w: 4, h: PH - 2 };
+    const b = blocks.find(o => !o.dead && o !== carry && overlap(probe, o));
+    let hit = false;
+    if (b && b.kind === 'crate') {
+      b.vx = p.face * KICK_V; b.kicked = true; b.settle = true; b.pushDir = 0;
+      burst(b.x + (p.face > 0 ? 0 : T), b.y + 8, 8, WOOD, 1.4, { angle: p.face > 0 ? Math.PI : 0, spread: 1.6, life: 18, chip: true });
+      sfx('kick'); shake = Math.max(shake, 3); hit = true;
+    } else {
+      const c = Math.floor((probe.x + probe.w / 2) / T);
+      for (let r = Math.floor(probe.y / T); r <= Math.floor((probe.y + probe.h) / T); r++) if (tileAt(c, r) === 'x') { smash(c, r); hit = true; }
+    }
+    if (!hit) { sfx('bonk'); burst(p.face > 0 ? p.x + PW : p.x, p.y + 5, 5, ['#ffffff', '#c9d0da'], 1, { angle: p.face > 0 ? Math.PI : 0, spread: 1.5, life: 12 }); }
+    hitstop = Math.max(hitstop, 3);
+    p.dashT = 0; p.vx = 0;
+    moveAxis(p, -p.face * 1.5, 'x');
+  }
+  // a cracked wall goes all at once: the whole run of cracked stone in that column
+  function smash(c, r) {
+    let r0 = r, r1 = r;
+    while (tileAt(c, r0 - 1) === 'x') r0--;
+    while (tileAt(c, r1 + 1) === 'x') r1++;
+    for (let rr = r0; rr <= r1; rr++) {
+      grid[rr][c] = '.';
+      burst(c * T + 8, rr * T + 8, 14, ['#57536b', '#6b6683', '#302d40', '#8c86a8'], 1.8, { angle: p.face > 0 ? 0 : Math.PI, spread: 2.2, life: 36, g: 0.18, chip: true });
+    }
+    bakeTiles();
+    sfx('crumble'); shake = Math.max(shake, 6);
+  }
+  function updatePlayer() {
+    const ax = (down.right ? 1 : 0) - (down.left ? 1 : 0);
+    if (ax) p.face = ax;
+    if (p.ground && !p.dashT) p.canDash = true;
+    if (pressed.bash && !carry && p.canDash && !p.dashT) {
+      p.dashT = DASH_T; p.canDash = false; p.vy = 0; p.buffer = 0; p.trail = [];
+      sfx('bash'); dust(p.x + 5, p.y + PH, 4);
+    }
+    const wasGround = p.ground, fallSpeed = p.vy;
+    p.pushing = false;
+    if (p.dashT > 0) dashStep();
+    else {
+    const speed = carry ? RUN_CARRY : RUN;
+    p.vx = ax * speed;
+    if (pressed.jump) p.buffer = 7;
+    p.coyote = p.ground ? 6 : p.coyote - 1;
+    if (p.buffer > 0 && p.coyote > 0) {
+      p.vy = -JUMP; p.coyote = 0; p.buffer = 0; p.squash = -4; sfx('jump'); dust(p.x + 5, p.y + PH, 4);
+    }
+    p.buffer--;
+    if (p.ground) p.bounceT = 0;
+    if (p.bounceT > 0) p.bounceT--;
+    else if (!down.jump && p.vy < -1.6) p.vy = -1.6;
+    p.vy = Math.min(p.vy + G, MAXFALL);
+    if (ax && moveAxis(p, p.vx, 'x') && p.ground && !carry) {
+      // shove a crate standing in the way, a little slower than walking
+      const probe = { x: p.x + ax, y: p.y, w: PW, h: PH };
+      const b = blocks.find(o => !o.dead && o.kind === 'crate' && o !== carry && overlap(probe, o));
+      const hitsSlime = b && slimes.some(s => s.alive && overlap({ x: b.x + ax * PUSH, y: b.y, w: T, h: T }, s));
+      if (b && !hitsSlime && onGround(b) && !somethingOnTop(b)) {
+        b.pushDir = ax; b.pushT = 2;
+        if (!moveAxis(b, ax * PUSH, 'x')) { moveAxis(p, ax * PUSH, 'x'); p.pushing = true; if (tick % 14 === 0) { sfx('scrape'); dust(b.x + (ax > 0 ? 2 : 14), b.y + T, 1); } }
+      }
+    }
+    if (moveAxis(p, p.vy, 'y')) {
+      if (p.vy > 0 && slipCarry()) moveAxis(p, p.rem, 'y');
+      else p.vy = 0;
+    }
+    }
+    if (carry && p.vy >= 0 && !onGround(p) && blockedAt(p, p.x, p.y + 1)) slipCarry();
+    p.ground = onGround(p);
+    if (p.ground && p.vy > 0) p.vy = 0;
+    if (p.ground && !wasGround && fallSpeed > 2) {
+      p.squash = 4; dust(p.x + 5, p.y + PH, 5);
+      const under = { x: p.x, y: p.y + PH, w: PW, h: 1 };
+      sfx(blocks.some(b => !b.dead && b !== carry && overlap(under, b)) ? 'landWood' : 'land');
+    }
+    if (p.squash > 0) p.squash--; else if (p.squash < 0) p.squash++;
+    p.walk = p.ground && ax ? p.walk + 1 : 0;
+    if (p.walk && p.walk % (carry ? 14 : 12) === 6) sfx(carry ? 'stepHeavy' : 'step');
+    if (p.throwT > 0) p.throwT--;
+    if (pressed.grab && !p.dashT) grab();
+    if (pressed.drop) putDown();
+    if (carry && carry.lift < 1) carry.lift = Math.min(1, carry.lift + 0.2);
+    if (carry) { const cb = carryBox(p.x, p.y); carry.x = cb.x; carry.y = cb.y; }
+    for (const tr of p.trail) tr.life++;
+    p.trail = p.trail.filter(tr => tr.life < 8);
+    // the plume: each tuft chases the one before it
+    let ax0 = p.x + (p.face > 0 ? 3 : 7), ay0 = p.y - (carry ? -2 : 1);
+    for (let i = 0; i < p.plume.length; i++) {
+      const s = p.plume[i];
+      const tx = ax0 - p.face * 1.5, ty = ay0 + 0.45 + Math.sin(tick / 7 + i) * 0.3;
+      s.x += (tx - s.x) * 0.5; s.y += (ty - s.y) * 0.5;
+      ax0 = s.x; ay0 = s.y;
+    }
+  }
+
+  // ---------- the dungeon's machinery ----------
+  const bodies = () => { const list = blocks.filter(b => !b.dead); if (mode !== 'dead') list.push(p); return list; };
+  function updateMachines() {
+    // plates
+    const was = Object.assign({}, plateState);
+    plateState = {};
+    // a plate only counts something actually standing on it: resting on the floor there, centred over the plate;
+    // the floating rune block weighs nothing, so it never holds one down
+    const onPlate = (pl, o) => { const cx = o.x + o.w / 2, foot = o.y + o.h; return cx > pl.c * T + 1 && cx < pl.c * T + T - 1 && foot > (pl.r + 1) * T - 2 && foot <= (pl.r + 1) * T + 0.5; };
+    for (const pl of plates) {
+      pl.on = bodies().some(o => o !== carry && o.kind !== 'rune' && onPlate(pl, o));
+      pl.sink += ((pl.on ? 2 : 0) - pl.sink) * 0.4;
+      if (pl.on) plateState[pl.ch] = true;
+    }
+    for (const ch of ['a', 'b']) if (!!was[ch] !== !!plateState[ch] && plates.some(pl => pl.ch === ch)) sfx(plateState[ch] ? 'plateOn' : 'plateOff');
+    // crumbling stone starts to go the moment real weight lands on it (a crate bears down on the tile under its middle), and nothing stops it after that
+    const weighty = blocks.filter(b => !b.dead && b !== carry && b.kind === 'crate');
+    if (mode === 'play' && p.ground) weighty.push(p);
+    for (const cr of crumbles) {
+      if (cr.gone) continue;
+      if (!cr.t && weighty.some(o => { const foot = o.y + o.h, cx = o.x + o.w / 2; return foot > cr.r * T - 1.01 && foot <= cr.r * T + 0.5 && (o === p ? o.x < cr.c * T + T && o.x + o.w > cr.c * T : cx >= cr.c * T && cx < cr.c * T + T); })) { cr.t = 1; sfx('creak'); }
+      else if (cr.t && ++cr.t >= CRUMBLE_T) {
+        cr.gone = true; grid[cr.r][cr.c] = '.';
+        springs = springs.filter(sp => !(sp.c === cr.c && sp.r === cr.r - 1));
+        burst(cr.c * T + 8, cr.r * T + 8, 16, ['#8c7a5e', '#b49c74', '#5e5040', '#3a3228'], 1.2, { life: 40, g: 0.2, chip: true });
+        sfx('crumble'); shake = Math.max(shake, 3);
+      }
+    }
+    // conveyors carry whatever stands on them, judged by the middle of its feet
+    const beltUnder = o => { const ch = tileAt(Math.floor((o.x + o.w / 2) / T), Math.floor((o.y + o.h + 0.5) / T)); return ch === '{' ? -1 : ch === '}' ? 1 : 0; };
+    if (mode === 'play' && p.ground && !p.dashT) { const d = beltUnder(p); if (d) { moveAxis(p, d * BELT_V, 'x'); if (carry) { const cb = carryBox(p.x, p.y); carry.x = cb.x; carry.y = cb.y; } } }
+    // a crate rides on while any of its base is still on the belt, so it goes right off the end; it won't be shoved into a mob,
+    // and once it's off it squares up on the grid like a dropped one
+    const beltEdge = b => beltUnder({ x: b.x - b.w / 2 + 0.01, y: b.y, w: b.w, h: b.h }) || beltUnder({ x: b.x + b.w / 2 - 0.01, y: b.y, w: b.w, h: b.h });
+    for (const b of blocks) {
+      if (b.dead || b === carry || b.kind !== 'crate') continue;
+      const d = b.ground ? beltUnder(b) || beltEdge(b) : 0;
+      if (d && !slimes.some(sl => sl.alive && overlap({ x: b.x + d * BELT_V, y: b.y, w: T, h: T }, sl))) { b.pushDir = 0; b.settle = false; b.onBelt = true; moveAxis(b, d * BELT_V, 'x'); }
+      else if (b.onBelt) { b.onBelt = false; b.settle = true; }
+    }
+    for (const sl of slimes) if (sl.alive && !sl.fly && blockedAt(sl, sl.x, sl.y + 1)) { const d = beltUnder(sl); if (d) moveAxis(sl, d * BELT_V, 'x'); }
+    // springs: the knight bounces off one; a crate sitting on it holds it down
+    for (const sp of springs) {
+      if (sp.t > 0) sp.t--;
+      const pad = { x: sp.c * T + 2, y: sp.r * T + 12, w: T - 4, h: 4 };
+      sp.held = blocks.some(b => !b.dead && b !== carry && b.kind === 'crate' && overlap(pad, b));
+      if (sp.held || mode !== 'play' || !p.ground || p.dashT) continue;
+      const cx = p.x + PW / 2, foot = p.y + PH;
+      if (cx > sp.c * T + 1 && cx < sp.c * T + T - 1 && Math.abs(foot - (sp.r + 1) * T) < 1.01) {
+        p.vy = -SPRING_V; p.ground = false; p.coyote = 0; p.buffer = 0; p.bounceT = 20; p.squash = -4; p.canDash = true;
+        sp.t = 12; sfx('spring'); dust(sp.c * T + 8, (sp.r + 1) * T, 5);
+      }
+    }
+    // levers flip when something new arrives on them
+    for (const lv of levers) {
+      const occ = bodies().some(o => o !== carry && overlap(lv, o));
+      if (occ && !lv.occ) { timer = L.timer || 180; lv.flip = 1; sfx('lever'); burst(lv.x + 5, lv.y + 3, 6, ['#ffd36b', '#ff9a3a'], 1, { life: 16 }); }
+      lv.occ = occ;
+    }
+    if (timer > 0) {
+      timer--;
+      const every = timer < 50 ? 8 : timer < 100 ? 15 : 30;
+      if (timer % every === 0) sfx((timer / every) % 2 ? 'tick' : 'tock');
+    }
+    for (const lv of levers) lv.flip = timer > 0 ? timer / (L.timer || 180) : Math.max(0, lv.flip - 0.1);
+    // doors and gates; a closing one crushes whatever is still under it
+    for (const d of doors) {
+      const open = d.ch === 'T' ? timer > 0 : !!plateState[d.ch.toLowerCase()];
+      if (open) { if (d.amt === 0) d.sound = true; if (d.amt < 1 && d.amt + 0.09 >= 1) d.clunk = true; d.amt = Math.min(1, d.amt + 0.09); }
+      else if (d.amt > 0) {
+        const prev = d.amt;
+        d.amt = Math.max(0, d.amt - 0.16);
+        if (prev >= 0.5 && d.amt < 0.5) {
+          const cell = { x: d.c * T + 1, y: d.r * T + 8, w: T - 2, h: 8 };
+          for (const b of blocks) if (!b.dead && b !== carry && overlap(cell, b)) splinter(b);
+          if (mode === 'play' && (overlap(cell, p) || (carry && overlap(cell, carryBox(p.x, p.y))))) die();
+        }
+        if (d.amt === 0 && (tileAt(d.c, d.r + 1) !== d.ch)) { sfx('slam'); shake = Math.max(shake, 3); dust(d.c * T + 8, d.r * T + T, 4); }
+      }
+    }
+    if (doors.some(d => d.sound)) { sfx('doorUp'); for (const d of doors) d.sound = false; }
+    if (doors.some(d => d.clunk)) { sfx('clunk'); for (const d of doors) d.clunk = false; }
+    // arrow traps: the slit glows red, then fires
+    const period = L.period || 100;
+    for (const tr of traps) {
+      const t2 = (lt + tr.ph) % period;
+      tr.warn = t2 > period - 26 ? (t2 - (period - 26)) / 26 : 0;
+      if (t2 === 0 && lt > 0) {
+        arrows.push({ x: tr.dir > 0 ? (tr.c + 1) * T - 4 : tr.c * T - 4, y: tr.r * T + 8, w: 8, h: 2, dir: tr.dir, stuck: 0 });
+        sfx('fire');
+      }
+    }
+    for (const a of arrows) {
+      if (a.stuck) { a.stuck++; continue; }
+      a.x += a.dir * 2.6;
+      const tipX = a.dir > 0 ? a.x + a.w : a.x, c = Math.floor(tipX / T), r = Math.floor(a.y / T);
+      const hb = { x: a.x, y: a.y - 1, w: a.w, h: 3 };
+      const hitB = blocks.find(b => !b.dead && overlap(hb, b));
+      if (hitB || tileSolid(c, r)) {
+        a.stuck = 1;
+        if (hitB) { sfx('arrowWood'); burst(tipX, a.y, 5, WOOD, 1, { angle: a.dir > 0 ? Math.PI : 0, spread: 1.5, life: 18 }); a.on = hitB; a.ox = a.x - hitB.x; a.oy = a.y - hitB.y; }
+        else { sfx('arrowStone'); burst(tipX, a.y, 6, ['#ffe2a0', '#ffffff', '#c8b080'], 1.3, { angle: a.dir > 0 ? Math.PI : 0, spread: 1.6, life: 12, g: 0.05 }); }
+        continue;
+      }
+      if (!a.whizzed && mode === 'play' && Math.abs(a.x + 4 - p.x - 5) < 24 && Math.abs(a.y - p.y - 6) < 20) { a.whizzed = true; sfx('whiz'); }
+      if (p.dashT > 0 && !a.deflected && overlap(hb, { x: p.x - 3, y: p.y, w: PW + 6, h: PH })) {
+        a.dir = -a.dir; a.deflected = true; sfx('clang');
+        burst(a.x + 4, a.y, 8, ['#ffffff', '#ffd84a', '#c9d0da'], 1.5, { life: 14, g: 0.05 });
+        continue;
+      }
+      if (!a.deflected && mode === 'play' && overlap(hb, { x: p.x + 1, y: p.y + 1, w: PW - 2, h: PH - 1 })) die();
+    }
+    for (const a of arrows) if (a.on && !a.on.dead) { a.x = a.on.x + a.ox; a.y = a.on.y + a.oy; }
+    arrows = arrows.filter(a => a.stuck < 50 && a.x > -20 && a.x < WW + 20 && !(a.on && a.on.dead));
+  }
+  function updateSlimes() {
+    for (const s of slimes) {
+      s.t++;
+      if (!s.alive) { s.dieT++; continue; }
+      if (s.fly) {
+        // a bat flaps back and forth along its row, bobbing, and turns at anything solid
+        if (moveAxis(s, s.dir * BAT_V, 'x')) s.dir *= -1;
+        const ny = s.by + Math.round(Math.sin(s.t / 9) * 2);
+        if (!blockedAt(s, s.x, ny)) s.y = ny;
+        if (s.t % 24 === 0 && Math.hypot(s.x - p.x, s.y - p.y) < 150) sfx('flap');
+      } else {
+      s.vy = Math.min(s.vy + G, MAXFALL);
+      if (moveAxis(s, s.vy, 'y')) s.vy = 0;
+      const grounded = blockedAt(s, s.x, s.y + 1);
+      if (grounded) {
+        // walk; at a wall, ledge or crate, pause a moment and turn back. Boxed in on both sides it just sits squashed.
+        const sp = s.type === 'beetle' ? 0.5 : 0.65;
+        const canGo = d => hitWorld(d > 0 ? s.x + s.w + 1 : s.x - 2, s.y + s.h + 1, 1, 1, s, s.y + s.h + 0.5) && !blockedAt(s, s.x + d * sp, s.y);
+        s.stuck = false;
+        if (s.pause > 0) s.pause--;
+        else if (canGo(s.dir)) { moveAxis(s, s.dir * sp, 'x'); if (s.t % 30 === 0 && Math.hypot(s.x - p.x, s.y - p.y) < 150) sfx(s.type === 'beetle' ? 'skitter' : 'slimeHop'); }
+        else if (canGo(-s.dir)) { s.dir *= -1; s.pause = 14; sfx('slimeBonk'); }
+        else s.stuck = true;
+      }
+      }
+      // crushed by a falling, flying or freshly set crate
+      for (const b of blocks) {
+        if (b.dead || b === carry || !overlap({ x: s.x + 1, y: s.y + 2, w: s.w - 2, h: s.h - 2 }, b)) continue;
+        // only a crate that is falling, flying or just set down squashes; a pushed one stops at the slime
+        if (b.vy < 0.5 && Math.abs(b.vx) < 1 && !(b.sq > 0)) continue;
+        killMob(s);
+        break;
+      }
+    }
+  }
+
+  function killMob(s) {
+    s.alive = false; s.dieT = 0; hitstop = 5; shake = Math.max(shake, 5);
+    if (s.type === 'bat') { burst(s.x + 6, s.y + 4, 16, ['#3a2f52', '#6b5a96', '#1a1426', '#ff5a3a'], 1.6, { life: 30, g: 0.12, chip: true }); sfx('stomp'); }
+    else if (s.type === 'beetle') { burst(s.x + 6, s.y + 4, 18, ['#5b4a86', '#8f7cc4', '#2e2448', '#ffc93a'], 1.6, { life: 30, g: 0.12, chip: true }); sfx('stomp'); }
+    else { burst(s.x + 6, s.y + 6, 24, ['#7fd36a', '#bfe8b0', '#4f9e4a', '#2f6634'], 1.8, { life: 34, g: 0.1 }); sfx('squish'); }
+  }
+  function die() {
+    if (mode !== 'play') return;
+    mode = 'dead'; modeT = 0; shake = 7; flashT = 6; hitstop = 6;
+    if (carry) { carry.vx = p.face * 0.5; carry.vy = -1; carry.settle = true; carry = null; }
+    burst(p.x + 5, p.y + 6, 26, ['#e6e9ee', '#b4bac4', '#3a78e0', '#ffc93a', '#e8443a'], 2.1, { life: 44, g: 0.14, chip: true });
+    burst(p.x + 4, p.y, 8, ['#d6463a', '#8f2b26'], 1.2, { g: 0.04, life: 60, drag: 0.95 });
+    save.deaths++; persist();
+    sfx('die');
+  }
+  function checkWorld() {
+    const pb = { x: p.x + 1, y: p.y + 1, w: PW - 2, h: PH - 1 };
+    const spiky = (c, r) => tileAt(c, r) === '^' && overlap(pb, { x: c * T + 1, y: r * T + 9, w: 14, h: 7 });
+    for (let r = Math.floor(pb.y / T); r <= Math.floor((pb.y + pb.h) / T); r++) for (let c = Math.floor(pb.x / T); c <= Math.floor((pb.x + pb.w) / T); c++) if (spiky(c, r)) return die();
+    for (const s of slimes) {
+      if (!s.alive || !overlap(pb, { x: s.x + 2, y: s.y + 3, w: s.w - 4, h: s.h - 3 })) continue;
+      // a beetle or a bat can be stomped from above (you bounce) or bashed aside; a slime only ever kills
+      if (s.type !== 'slime' && p.vy > 0 && p.y + PH - p.vy <= s.y + 4) {
+        killMob(s); p.vy = down.jump ? -5 : -3.6; p.bounceT = 10; p.canDash = true; p.squash = -3;
+        continue;
+      }
+      if (s.type !== 'slime' && p.dashT > 0) { killMob(s); continue; }
+      return die();
+    }
+    if (p.y > H + 4) return die();
+    for (const e of exits) if (overlap({ x: p.x + 3, y: p.y + 2, w: 4, h: 8 }, { x: e.x + 2, y: e.y + 12, w: 8, h: 16 })) {
+      mode = 'clear'; modeT = 0; irisDir = -1;
+      save.time += levelTime;
+      save.level = Math.min(LEVELS.length, levelIdx + 1); persist();
+      sfx('clear'); sfx('stack');
+      return;
+    }
+  }
+
+  // ---------- step ----------
+  let keepInput = false, exitNear = false;
+  function stepPlay() {
+    if (pressed.restart && mode !== 'clear') { respawn(); return; }
+    if (pressed.menu) { scene = 'title'; return; }
+    if (hitstop > 0) { hitstop--; keepInput = true; return; }
+    if (mode === 'play') {
+      updatePlayer(); updateBlocks(); updateMachines(); updateSlimes();
+      if (torches.length && Math.random() < 0.015) sfx('crackle');
+      if (!exitNear && exits.some(e => Math.hypot(e.x + 6 - p.x - 5, e.y + 20 - p.y - 6) < 36)) { exitNear = true; sfx('shimmer'); }
+      levelTime += 1 / 60; lt++;
+      if (mode === 'play') checkWorld();
+    } else {
+      modeT++;
+      updateBlocks(); updateMachines(); updateSlimes(); lt++;
+      if (mode === 'dead' && modeT > 40) respawn();
+      if (mode === 'clear' && modeT > 60) {
+        if (levelIdx + 1 >= LEVELS.length) scene = 'end';
+        else loadLevel(levelIdx + 1, true);
+      }
+    }
+  }
+  function step() {
+    keepInput = false;
+    if (scene === 'title') stepTitle();
+    else if (scene === 'end') { if (pressed.confirm || pressed.grab) { scene = 'title'; sfx('select'); } }
+    else stepPlay();
+    if (scene === 'play') {
+      if (irisDir > 0) { iris = Math.min(1, iris + 0.045); if (iris >= 1) irisDir = 0; }
+      else if (irisDir < 0) iris = Math.max(0, iris - 0.035);
+    }
+    if (p) camX += (camTarget() - camX) * 0.12;
+    updateParticles();
+    if (shake > 0) shake -= 0.5;
+    if (flashT > 0) flashT--;
+    music();
+    tick++;
+    if (!keepInput) for (const a in pressed) pressed[a] = false;
+  }
+
+  // ---------- title ----------
+  const menuItems = () => save.level > 0 && save.level < LEVELS.length ? ['CONTINUE', 'NEW GAME'] : ['NEW GAME'];
+  function stepTitle() {
+    if (++pvT >= PV_LEN) startPreview(pvIdx + 1);
+    if (settingsOpen) return;
+    const items = menuItems();
+    if (menuSel >= items.length) menuSel = 0;
+    if (items.length > 1 && (pressed.jump || pressed.drop)) { menuSel = (menuSel + (pressed.jump ? items.length - 1 : 1)) % items.length; sfx('select'); }
+    if (pressed.confirm || pressed.grab) {
+      sfx('start');
+      if (items[menuSel] === 'NEW GAME') { save.level = 0; save.deaths = 0; save.time = 0; persist(); }
+      scene = 'play';
+      syncScene();
+      loadLevel(Math.min(save.level, LEVELS.length - 1), true);
+    }
+  }
+  let lastPlay = false;
+  function syncScene() {
+    if (scene === lastScene) return;
+    lastScene = scene;
+    $('hud').hidden = scene !== 'play';
+    $('keys').hidden = scene !== 'title';
+    $('settings').hidden = scene !== 'title';
+    $('pvwrap').hidden = scene !== 'title';
+    cv.style.background = scene === 'title' ? 'transparent' : '#000';
+    if (scene !== 'title' && settingsOpen) openSettings(false);
+    if (scene === 'title' && lastPlay) startPreview(pvIdx);
+    lastPlay = scene !== 'title';
+  }
+
+  // ---------- baking ----------
+  function bakeBackground() {
+    const b = bgLayer.getContext('2d');
+    const f = (c, x, y, w, h) => { b.fillStyle = c; b.fillRect(x, y, w, h); };
+    f('#15121e', 0, 0, WW, H);
+    // big dungeon blocks, staggered, in two quiet tones
+    for (let row = 0; row < H / 12; row++) {
+      const y = row * 12, off = (row % 2) * 12;
+      for (let x = -off; x < WW; x += 24) {
+        const v = hash(Math.floor((x + 100) / 24), row, levelIdx);
+        const col = v < 0.5 ? '#1a1726' : '#1d1a2a';
+        f(col, x + 1, y + 1, 22, 10);
+        f('#121019', x + 1, y + 10, 22, 1);
+      }
+    }
+    const v = vignette.getContext('2d');
+    v.clearRect(0, 0, W, H);
+    const g = v.createRadialGradient(W / 2, H / 2, 70, W / 2, H / 2, 210);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.6)');
+    v.fillStyle = g; v.fillRect(0, 0, W, H);
+  }
+
+  function placeDecor() {
+    torches = [];
+    const open = (c, r) => tileAt(c, r) === '.' && !doorMap[r]?.[c];
+    const near = (c, r, d) => exits.some(e => Math.abs(e.c - c) <= d && Math.abs(e.r - r) <= 2) || levers.some(l => Math.abs(l.c - c) <= 1 && Math.abs(l.r - r) <= 1);
+    // torches on the back wall at head height and above
+    const cands = [];
+    for (let c = 1; c < COLS - 1; c++) for (let r = 2; r < ROWS - 2; r++) if (open(c, r) && open(c, r + 1) && open(c - 1, r) && open(c + 1, r) && !near(c, r, 1)) cands.push([c, r]);
+    cands.sort((a, b) => (hash(a[0], a[1], levelIdx + 9) - hash(b[0], b[1], levelIdx + 9)) + (Math.abs(a[1] - 6) - Math.abs(b[1] - 6)) * 0.15);
+    for (const [c, r] of cands) {
+      if (torches.length >= Math.ceil(COLS / 10)) break;
+      if (torches.some(t2 => Math.abs(t2.c - c) < 7)) continue;
+      torches.push({ c, r, x: c * T + 8, y: r * T + 6, ph: hash(c, r) * 9 });
+    }
+  }
+
+  function bakeDark() {
+    const d = dark.getContext('2d');
+    d.globalCompositeOperation = 'source-over';
+    d.clearRect(0, 0, WW, H);
+    d.fillStyle = 'rgba(5,3,12,0.62)'; d.fillRect(0, 0, WW, H);
+    d.globalCompositeOperation = 'destination-out';
+    const hole = (x, y, r, a) => ring(d, x, y, r, '0,0,0', a);
+    for (const e of exits) hole(e.x + 6, e.y + 14, 40, 0.8);
+    d.globalCompositeOperation = 'source-over';
+  }
+
+  function bakeTiles() {
+    const t = tileLayer.getContext('2d');
+    t.clearRect(0, 0, WW, H);
+    const f = (c, x, y, w, h) => { t.fillStyle = c; t.fillRect(x, y, w, h); };
+    const open = (c, r) => !isStone(tileAt(c, r));
+    const depth = [];
+    for (let r = 0; r < ROWS; r++) { depth.push([]); for (let c = 0; c < COLS; c++) {
+      if (!isStone(grid[r][c])) { depth[r].push(0); continue; }
+      let d = 4;
+      for (let rr = -3; rr <= 3; rr++) for (let cc = -3; cc <= 3; cc++) {
+        const r2 = r + rr, c2 = c + cc;
+        if (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS) continue;
+        if (!isStone(grid[r2][c2])) d = Math.min(d, Math.max(Math.abs(rr), Math.abs(cc)));
+      }
+      depth[r].push(d);
+    } }
+    const STONE = [['#57536b', '#6b6683', '#47435a', '#302d40'], ['#413e55', '#4f4b66', '#35324a', '#26243a'], ['#2b2a3b', '#343246', '#232232', '#1a1926'], ['#1a1924', '#201f2c', '#15141d', '#100f17']];
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const ch = grid[r][c], x = c * T, y = r * T;
+      if (isStone(ch)) {
+        const pal = STONE[Math.min(3, Math.max(0, depth[r][c] - 1))];
+        // two courses of rough-cut blocks per tile
+        for (let course = 0; course < 2; course++) {
+          const yy = y + course * 8, off = ((r * 2 + course) % 2) * 8;
+          for (let bx = -16; bx < 16; bx += 16) {
+            const x0 = x + bx + off, x1 = Math.max(x, x0), x2 = Math.min(x + 16, x0 + 16);
+            if (x2 <= x1) continue;
+            const v = hash(Math.floor((x0 + 1000) / 16), r * 2 + course);
+            f(v < 0.25 ? pal[2] : pal[0], x1, yy, x2 - x1, 8);
+            f(pal[1], x1, yy, x2 - x1, 1);
+            f(pal[3], x1, yy + 7, x2 - x1, 1);
+            if (x0 >= x && x0 < x + 16) f(pal[3], x0, yy, 1, 8);
+            if (v > 0.82) { f(pal[3], x1 + 3, yy + 3, 2, 1); f(pal[3], x1 + 4, yy + 4, 2, 1); }
+            if (v > 0.45 && v < 0.5) f(pal[1], x1 + 9, yy + 2, 1, 1);
+          }
+        }
+        if (open(c, r - 1)) {
+          f('#0a0910', x, y, T, 1); f('#8c86a8', x, y + 1, T, 1); f('#6b6683', x, y + 2, T, 1);
+        }
+        if (open(c, r + 1)) { f('#0a0910', x, y + T - 1, T, 1); f('#1f1d2b', x, y + T - 2, T, 1); }
+        if (open(c - 1, r)) { f('#0a0910', x, y, 1, T); f('#7a7496', x + 1, y + 1, 1, T - 2); }
+        if (open(c + 1, r)) { f('#0a0910', x + T - 1, y, 1, T); f('#2a2838', x + T - 2, y + 1, 1, T - 2); }
+        if (ch === 'x') {
+          // cracked stone: a dark lightning crack across the face and a few loose chips
+          const k = '#0a0910';
+          f(k, x + 7, y + 1, 1, 3); f(k, x + 6, y + 4, 1, 3); f(k, x + 7, y + 7, 1, 2); f(k, x + 8, y + 9, 1, 3); f(k, x + 7, y + 12, 1, 3);
+          f(k, x + 3, y + 5, 3, 1); f(k, x + 9, y + 10, 4, 1); f(k, x + 2, y + 11, 1, 2);
+          f('#8c86a8', x + 8, y + 2, 1, 2); f('#8c86a8', x + 7, y + 4, 1, 1); f('#8c86a8', x + 9, y + 12, 1, 2);
+        }
+        if (ch === '<' || ch === '>') {
+          // a carved lion-ish face with a slit mouth
+          const fx = ch === '>' ? x + T - 7 : x + 1;
+          f('#1a1924', fx, y + 3, 6, 10); f('#47435a', fx, y + 3, 6, 1);
+          f('#6b6683', fx + 1, y + 4, 1, 1); f('#6b6683', fx + 4, y + 4, 1, 1);
+          f('#05040a', ch === '>' ? x + T - 5 : x, y + 7, 5, 2);
+        }
+      } else if (ch === '-') {
+        f('#2a170c', x, y, T, 5);
+        f('#8a5a30', x, y, T, 4); f('#b07a44', x, y, T, 1); f('#5a3518', x, y + 3, T, 1);
+        f('#2a170c', x + 7, y, 1, 4);
+        if (!['-'].includes(tileAt(c - 1, r)) && open(c - 1, r)) { f('#2a170c', x + 1, y + 4, 2, 5); }
+        if (!['-'].includes(tileAt(c + 1, r)) && open(c + 1, r)) { f('#2a170c', x + 13, y + 4, 2, 5); }
+      } else if (ch === '^') {
+        const by = y + T - 3;
+        f('#1d1b26', x, by, T, 3); f('#3d3a4e', x, by, T, 1);
+        for (let i = 0; i < 4; i++) {
+          const sx = x + i * 4;
+          for (let h = 0; h < 7; h++) {
+            const yy = y + T - 4 - h, w = h < 2 ? 4 : h < 4 ? 3 : h < 6 ? 2 : 1, ox = Math.floor((4 - w) / 2);
+            f('#0b0a10', sx + ox, yy, w, 1);
+            if (w > 1) { f('#c9cfdc', sx + ox, yy, Math.ceil(w / 2), 1); f('#6f7489', sx + ox + Math.ceil(w / 2), yy, Math.floor(w / 2), 1); }
+            else f('#f0f3f8', sx + ox, yy, 1, 1);
+          }
+        }
+      }
+    }
+  }
+
+  // ---------- drawing ----------
+  const px = (c, x, y, w, h) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+  function drawPlayer() {
+    let leg = 'stand';
+    if (!p.ground) leg = p.vy < 0 ? 'jump' : 'fall';
+    else if (p.walk) leg = 'run' + (Math.floor(p.walk / (p.pushing ? 8 : 5)) % 4);
+    const blink = (tick % 160) < 6 ? 1 : 0;
+    const pose = carry ? 'carry' : p.throwT > 0 || p.dashT > 0 ? 'throw' : 'idle';
+    const spr = PF[leg + pose + blink][p.face > 0 ? 0 : 1];
+    const bob = (leg === 'run0' || leg === 'run2') ? -1 : (!p.walk && p.ground && !carry && Math.floor(tick / 30) % 2) ? 0 : 0;
+    // bash afterimages fading behind
+    for (const tr of p.trail) {
+      ctx.globalAlpha = 0.35 * (1 - tr.life / 8);
+      ctx.drawImage(spr, Math.round(tr.x - 2.5), Math.round(tr.y) + PH + 1 - spr.height);
+    }
+    ctx.globalAlpha = 1;
+    const sq = p.squash;
+    const lean = p.pushing ? p.face : 0;
+    if (sq) {
+      const sx = 1 + sq * 0.05, sy = 1 - sq * 0.05;
+      const w = spr.width * sx, h = spr.height * sy;
+      ctx.drawImage(spr, Math.round(p.x + 5 - w / 2), Math.round(p.y + PH + 1 - h), Math.round(w), Math.round(h));
+    } else ctx.drawImage(spr, Math.round(p.x - 2.5) + lean, Math.round(p.y) + PH + 1 - spr.height + bob);
+    // the round shield held out front mid-bash
+    if (p.dashT > 0) {
+      const sx = p.face > 0 ? Math.round(p.x) + PW - 1 : Math.round(p.x) - 6, sy = Math.round(p.y) + 1;
+      px('#000', sx, sy, 7, 11); px('#b4bac4', sx + 1, sy + 1, 5, 9); px('#e6e9ee', sx + 1, sy + 1, 2, 3);
+      px('#e8443a', sx + 3, sy + 2, 1, 7); px('#e8443a', sx + 2, sy + 4, 3, 1); px('#ffc93a', sx + 3, sy + 4, 1, 1);
+    }
+  }
+  function drawBlock(b) {
+    let x = b.x, y = b.y;
+    if (b === carry && b.lift < 1) { const t = b.lift; x = b.fromX + (b.x - b.fromX) * t; y = b.fromY + (b.y - b.fromY) * t - Math.sin(t * Math.PI) * 4; }
+    if (b === carry) y -= 3;
+    if (b === carry && p.walk) y += (Math.floor(p.walk / 5) % 2) ? 0 : 1;
+    let bob = 0;
+    if (b.kind === 'rune' && b !== carry && b.fly <= 0 && b.tx == null) bob = Math.round(Math.sin(tick / 20 + b.ph) * 0.6);
+    const rx = Math.round(x), ry = Math.round(y) + bob;
+    if (b.sq > 0) ctx.drawImage(b.kind === 'crate' ? CRATE : RUNE, rx - 1, ry + 1, T + 2, T - 1);
+    else ctx.drawImage(b.kind === 'crate' ? CRATE : RUNE, rx, ry);
+    if (b.kind === 'rune') {
+      const glow = 0.6 + 0.4 * Math.sin(tick / 12 + b.ph);
+      ctx.globalAlpha = glow;
+      for (const [gx, gy] of GLYPH) px((gx + gy) % 3 ? '#7fe8f0' : '#e6fdff', rx + gx, ry + gy + (b.sq > 0 ? 1 : 0), 1, 1);
+      ctx.globalAlpha = 1;
+      if (b !== carry && tick % 9 === (b.ph | 0) % 9) parts.push({ x: rx + 3 + Math.random() * 10, y: ry + T, vx: 0, vy: 0.25, life: 0, max: 16, g: 0, c: '#7fe8f0', s: 1, drag: 1 });
+    }
+  }
+  function drawSlime(s) {
+    if (!s.alive) {
+      if (s.dieT > 30) return;
+      if (s.type === 'bat') { ctx.globalAlpha = 1 - s.dieT / 30; px('#3a2f52', Math.round(s.x) + 2, Math.round(s.y) + 2 + s.dieT, s.w - 4, 3); ctx.globalAlpha = 1; return; }
+      if (s.type === 'beetle') { ctx.globalAlpha = 1 - s.dieT / 30; px('#2e2448', Math.round(s.x), Math.round(s.y) + s.h - 3, s.w, 3); px('#5b4a86', Math.round(s.x) + 1, Math.round(s.y) + s.h - 3, s.w - 2, 1); ctx.globalAlpha = 1; return; }
+      ctx.globalAlpha = 1 - s.dieT / 30;
+      px('#4f9e4a', Math.round(s.x) - 1, Math.round(s.y) + s.h - 2, s.w + 2, 2); px('#7fd36a', Math.round(s.x), Math.round(s.y) + s.h - 2, s.w, 1);
+      ctx.globalAlpha = 1;
+      return;
+    }
+    if (s.type === 'bat') {
+      ctx.drawImage((s.dir > 0 ? BAT : BAT_F)[Math.floor(s.t / 7) % 2], Math.round(s.x) - 1, Math.round(s.y) - 1);
+      return;
+    }
+    if (s.type === 'beetle') {
+      ctx.drawImage((s.dir > 0 ? BEETLE : BEETLE_F)[Math.floor(s.t / 6) % 2], Math.round(s.x) - 1, Math.round(s.y) - 1);
+      return;
+    }
+    const fr = s.stuck || s.pause > 7 ? 1 : Math.floor(s.t / 12) % 2;
+    ctx.drawImage((s.dir > 0 ? SLIME : SLIME_F)[fr], Math.round(s.x) - 1, Math.round(s.y) - 1);
+  }
+  function drawPlate(pl) {
+    const x = pl.c * T, y = pl.r * T, s = Math.round(pl.sink);
+    const gem = pl.ch === 'a' ? ['#f0a24a', '#ffd9a0', '#7a4a1a'] : ['#b58cff', '#e8d8ff', '#4a2f80'];
+    px('#0b0a10', x + 1, y + 12 + s, 14, 4 - s);
+    px('#6b6683', x + 2, y + 12 + s, 12, 1); px('#47435a', x + 2, y + 13 + s, 12, 3 - s);
+    px(pl.on ? gem[1] : gem[2], x + 5, y + 13 + s, 6, 1);
+    if (pl.on) { ctx.globalAlpha = 0.5; px(gem[0], x + 4, y + 12 + s, 8, 1); ctx.globalAlpha = 1; }
+  }
+  // portcullis: iron bars that rise into the ceiling; plate doors wear their plate's colour, timed gates glow red
+  function drawDoors() {
+    for (const d of doors) {
+      const x = d.c * T, y = d.r * T;
+      const top = tileAt(d.c, d.r - 1) !== d.ch;
+      const lift = Math.round(d.amt * 15);
+      const gem = d.ch === 'A' ? '#f0a24a' : d.ch === 'B' ? '#b58cff' : '#ff6a4a';
+      ctx.save(); ctx.beginPath(); ctx.rect(x, y, T, T); ctx.clip();
+      const yy = y - lift;
+      for (const bx of [2, 6, 10, 13]) { px('#0b0a10', x + bx - 1, yy, 3, T); px('#5a5f70', x + bx, yy, 1, T); px('#9aa2b4', x + bx, yy + 2, 1, 1); }
+      px('#0b0a10', x, yy + 4, T, 3); px('#7a8092', x, yy + 4, T, 1); px('#3c4050', x, yy + 5, T, 1);
+      if (tileAt(d.c, d.r + 1) !== d.ch) for (const bx of [2, 6, 10, 13]) { px('#0b0a10', x + bx - 1, yy + T - 3, 3, 3); px('#c9cfdc', x + bx, yy + T - 2, 1, 2); }
+      ctx.restore();
+      if (top) {
+        px('#0b0a10', x - 1, y - 3, T + 2, 4); px('#47435a', x - 1, y - 3, T + 2, 1);
+        const lit = d.ch === 'T' ? timer > 0 : d.amt > 0.5;
+        px('#0b0a10', x + 5, y - 5, 6, 4); px(lit ? gem : '#2a2836', x + 6, y - 4, 4, 2);
+        if (d.ch === 'T' && timer > 0 && timer < 50 && (tick >> 2) % 2) px('#ffffff', x + 7, y - 4, 2, 1);
+      }
+    }
+  }
+  function drawLever(lv) {
+    const x = lv.c * T, y = lv.r * T;
+    px('#0b0a10', x + 2, y + 8, 12, 8); px('#57536b', x + 3, y + 9, 10, 6); px('#8c86a8', x + 3, y + 9, 10, 1); px('#302d40', x + 3, y + 14, 10, 1);
+    px('#e2b54c', x + 4, y + 11, 1, 1); px('#e2b54c', x + 11, y + 11, 1, 1);
+    // the arm swings from left (rest) to right (thrown) and creeps back as the timer runs down
+    const a = -Math.PI * 0.75 + lv.flip * Math.PI * 0.5, cx = x + 8, cy = y + 11;
+    for (let i = 0; i < 8; i++) { px('#0b0a10', Math.round(cx + Math.cos(a) * i), Math.round(cy + Math.sin(a) * i) + 1, 1, 1); px('#a8723e', Math.round(cx + Math.cos(a) * i), Math.round(cy + Math.sin(a) * i), 1, 1); }
+    const kx = Math.round(cx + Math.cos(a) * 8), ky = Math.round(cy + Math.sin(a) * 8);
+    px('#0b0a10', kx - 2, ky - 2, 4, 4); px(timer > 0 ? '#ff7a4a' : '#c8402e', kx - 1, ky - 1, 2, 2); px('#ffd0b0', kx - 1, ky - 1, 1, 1);
+  }
+  function drawExit(e) {
+    const x = e.c * T, y = e.r * T;
+    // a tall violet portal, two tiles high: a black rim, a bright edge and rings that keep pouring into a dark core
+    const cx = x + 8, cy = y + 1;
+    for (let j = -15; j < 16; j++) for (let i = 0; i < 16; i++) {
+      const dx = (x + i + 0.5 - cx) / 7.5, dy = (y + j + 0.5 - cy) / 15, d = Math.hypot(dx, dy);
+      if (d > 1.14) continue;
+      let col;
+      if (d > 1) col = '#000000';
+      else if (d > 0.86) col = '#f2c8ff';
+      else if (d < 0.22) col = '#12051f';
+      else col = PORTAL[Math.floor(d * 3 + tick / 45) % 3];
+      px(col, x + i, y + j, 1, 1);
+    }
+    // a little step of stone under it, so it stands on the floor rather than floating
+    px('#0b0a10', x + 1, y + 14, 14, 2); px('#6b6683', x + 2, y + 14, 12, 1);
+    if (tick % 24 === 0) {
+      const a = Math.random() * Math.PI * 2;
+      parts.push({ x: cx + Math.cos(a) * 9, y: cy + Math.sin(a) * 17, vx: -Math.cos(a) * 0.12, vy: -Math.sin(a) * 0.22, life: 0, max: 60, g: 0, c: Math.random() < 0.5 ? '#f2c8ff' : '#c46cff', s: 1, drag: 1 });
+    }
+  }
+  // conveyor floor: a dark iron belt with bright chevrons sliding the way it rolls
+  function drawBelts() {
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const ch = grid[r][c];
+      if (!isBelt(ch)) continue;
+      const x = c * T, y = r * T, d = ch === '}' ? 1 : -1, sh = ((Math.floor(tick * BELT_V) * d) % 8 + 8) % 8;
+      px('#0a0910', x, y, T, T); px('#2a2838', x, y + 1, T, T - 2); px('#47435a', x, y + 1, T, 1); px('#4a4436', x, y + 4, T, 6);
+      for (let i = -8; i < T + 8; i += 8) {
+        const cx = x + i + sh;
+        for (let k = 0; k < 3; k++) { const xx = cx + (d > 0 ? k : -k); if (xx >= x && xx < x + T) { px('#f0a24a', xx, y + 5 + k, 1, 1); px('#f0a24a', xx, y + 9 - k, 1, 1); } }
+      }
+      for (const wx of [3, 12]) { const a = (((tick * BELT_V * d / 2) % 4) + 4) % 4; px('#0a0910', x + wx - 1, y + 11, 3, 3); px('#8c86a8', x + wx + (a < 2 ? 0 : -1) , y + 12, 1, 1); }
+    }
+  }
+  const PORTAL = ['#3a0e6a', '#7a2cc8', '#c46cff'];
+  // crumbling stone: pale, loosely laid bricks; once something stands on it, it shakes harder and harder and sheds grit
+  function drawCrumble(cr) {
+    if (cr.gone) return;
+    const k = cr.t / CRUMBLE_T, j = cr.t ? (tick % 4 < 2 ? 1 : -1) * Math.ceil(k * 2) : 0;
+    const x = cr.c * T + (cr.t && tick % 3 === 0 ? j : 0), y = cr.r * T;
+    px('#0a0910', x, y, T, T);
+    for (const [bx, by, bw] of [[1, 1, 7], [9, 1, 6], [1, 9, 3], [5, 9, 6], [12, 9, 3]]) {
+      px('#8c7a5e', x + bx, y + by, bw, 6); px('#b49c74', x + bx, y + by, bw, 1); px('#5e5040', x + bx, y + by + 5, bw, 1);
+    }
+    px('#0a0910', x + 4, y + 3, 1, 2); px('#0a0910', x + 11, y + 11, 2, 1);
+    if (k > 0.4) { px('#0a0910', x + 6, y + 2, 1, 5); px('#0a0910', x + 7, y + 9, 1, 4); px('#0a0910', x + 2, y + 11, 3, 1); }
+    if (cr.t && tick % 4 === 0) parts.push({ x: cr.c * T + 2 + Math.random() * 12, y: y + T, vx: 0, vy: 0.6, life: 0, max: 20, g: 0.1, c: '#8c7a5e', s: 1, drag: 1 });
+  }
+  // a red spring pad on a black coil; it squashes flat under a crate and stretches tall for a moment after a launch
+  function drawSpring(sp) {
+    const x = sp.c * T, base = sp.r * T + T;
+    const h = sp.held ? 2 : sp.t > 6 ? 9 : sp.t > 0 ? 6 : 4;
+    px('#0b0a10', x + 2, base - 2, 12, 2); px('#47435a', x + 3, base - 2, 10, 1);
+    for (let i = 0; i < h; i++) px(i % 2 ? '#9aa2b4' : '#5a5f70', x + (i % 2 ? 5 : 4), base - 3 - i, 7, 1);
+    const top = base - 3 - h;
+    px('#0b0a10', x + 1, top - 2, 14, 3); px('#e8443a', x + 2, top - 1, 12, 1); px('#ff9a8a', x + 2, top - 1, 4, 1);
+  }
+  function drawTorch(t2) {
+    const x = t2.x, y = t2.y;
+    px('#0b0a10', x - 3, y + 6, 6, 3); px('#47435a', x - 2, y + 6, 4, 1);
+    px('#0b0a10', x - 2, y + 1, 4, 6); px('#6b4426', x - 1, y + 2, 2, 5); px('#8a5a30', x - 1, y + 2, 1, 5);
+    const fl = (Math.floor(tick / 4 + t2.ph) % 3);
+    px('#e8503a', x - 2, y - 2, 4, 3); px('#ff9a3a', x - 1, y - 4 - fl % 2, 2, 5); px('#ffd36b', x - 1, y - 2, 2, 2); px('#fff4d0', x, y - 1, 1, 1);
+    if (fl === 2) px('#ff9a3a', x + 1, y - 5, 1, 1);
+    if (tick % 6 === 0) parts.push({ x: x + (Math.random() - 0.5) * 3, y: y - 4, vx: (Math.random() - 0.5) * 0.2, vy: -0.45, life: 0, max: 26, g: -0.005, c: Math.random() < 0.5 ? '#ffb060' : '#ff7040', s: 1, drag: 1 });
+  }
+  function drawArrow(a) {
+    const x = Math.round(a.x), y = Math.round(a.y);
+    ctx.globalAlpha = a.stuck > 30 ? 1 - (a.stuck - 30) / 20 : 1;
+    px('#0b0a10', x - 1, y - 1, a.w + 2, 3);
+    px('#c9a87a', x, y, a.w, 1);
+    if (a.dir > 0) { px('#e8eef4', x + a.w - 2, y - 1, 2, 3); px('#d6463a', x, y - 1, 2, 1); px('#d6463a', x, y + 1, 2, 1); }
+    else { px('#e8eef4', x, y - 1, 2, 3); px('#d6463a', x + a.w - 2, y - 1, 2, 1); px('#d6463a', x + a.w - 2, y + 1, 2, 1); }
+    ctx.globalAlpha = 1;
+    if (!a.stuck && tick % 2 === 0) { ctx.globalAlpha = 0.3; px('#e8eef4', x - a.dir * 6, y, 5, 1); ctx.globalAlpha = 1; }
+  }
+  // spikes glint now and then so they read as sharp
+  function drawShine() {
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      if (grid[r][c] !== '^') continue;
+      const ph = (tick + c * 6 + r * 11) % 150, x = c * T, y = r * T;
+      if (ph < 16) {
+        const i = Math.floor(ph / 4), sx = x + i * 4 + 2;
+        ctx.globalAlpha = 1 - (ph % 4) / 5;
+        px('#ffffff', sx, y + 8, 1, 2); ctx.globalAlpha = 1;
+      }
+    }
+    for (const tr of traps) if (tr.warn > 0) {
+      const x = tr.dir > 0 ? tr.c * T + T - 5 : tr.c * T, y = tr.r * T + 7;
+      ctx.globalAlpha = tr.warn; px('#ff5a3a', x, y, 5, 2); px('#ffd0a0', x + (tr.dir > 0 ? 4 : 0), y, 1, 2); ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawLighting() {
+    lctx.globalCompositeOperation = 'source-over';
+    lctx.clearRect(0, 0, WW, H);
+    lctx.drawImage(dark, 0, 0);
+    lctx.globalCompositeOperation = 'destination-out';
+    const hole = (x, y, r, a) => ring(lctx, x, y, r, '0,0,0', a);
+    for (const t2 of torches) hole(t2.x, t2.y - 2, 60 + Math.sin(tick / 5 + t2.ph) * 2 + (tick % 7 === 0 ? 2 : 0), 0.95);
+    if (p && mode !== 'dead') hole(p.x + 5, p.y + 4, 46, 0.8);
+    for (const b of blocks) if (!b.dead && b.kind === 'rune') hole(b.x + 8, b.y + 8, 30, 0.75);
+    for (const s of slimes) if (s.alive) hole(s.x + 6, s.y + 5, 20, 0.5);
+    for (const tr of traps) if (tr.warn > 0) hole(tr.c * T + 8, tr.r * T + 8, 22, tr.warn * 0.8);
+    for (const lv of levers) hole(lv.x + 5, lv.y + 6, 24, 0.7);
+    for (const pl of plates) hole(pl.x + 7, pl.y + 2, 18, 0.6);
+    if (timer > 0) for (const d of doors) if (d.ch === 'T') hole(d.c * T + 8, d.r * T + 8, 16, 0.4);
+    ctx.drawImage(lightLayer, 0, 0);
+    ctx.globalCompositeOperation = 'lighter';
+    const glow = (x, y, r, rgb, a) => ring(ctx, x, y, r, rgb, a, 0.5);
+    for (const t2 of torches) glow(t2.x, t2.y - 2, 34 + Math.sin(tick / 4 + t2.ph) * 2, '255,130,50', 0.17);
+    for (const e of exits) glow(e.c * T + 8, e.r * T + 2, 30, '190,90,255', 0.2 + 0.02 * Math.sin(tick / 40));
+    for (const b of blocks) if (!b.dead && b.kind === 'rune') glow(b.x + 8, b.y + 8, 20, '110,230,240', 0.17);
+    for (const pl of plates) if (pl.on) glow(pl.x + 7, pl.y + 2, 12, pl.ch === 'a' ? '240,160,70' : '180,140,255', 0.2);
+    for (const tr of traps) if (tr.warn > 0) glow(tr.c * T + 8 + tr.dir * 8, tr.r * T + 8, 12, '255,90,58', 0.3 * tr.warn);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // Between levels a wall of stone blocks fills the screen: on the way in it tumbles away from the
+  // knight, nearest blocks first; on the way out it drops back into place, farthest first.
+  function drawIris() {
+    if (iris >= 1) return;
+    const pc = p ? (p.x + 5 - camX) / T : W / T / 2, pr = p ? (p.y + 6) / T : ROWS / 2;
+    const closing = irisDir < 0;
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < W / T; c++) {
+      const d = Math.min(1, Math.hypot(c + 0.5 - pc, r + 0.5 - pr) / 22);
+      const k = Math.max(0, Math.min(1, (iris - d * 0.55) / 0.45));
+      if (k >= 1) continue;
+      const off = closing ? -k * k * 220 : k * k * 220;
+      const x = c * T, y = Math.round(r * T + off), v = hash(c, r, 77);
+      px('#09080d', x, y, T, T);
+      px(v < 0.3 ? '#1f1d2b' : '#25222f', x + 1, y + 1, T - 2, T - 2);
+      px('#37334a', x + 1, y + 1, T - 2, 1); px('#141219', x + 1, y + T - 2, T - 2, 1);
+      if (v > 0.85) { px('#141219', x + 4, y + 5, 3, 1); px('#141219', x + 6, y + 6, 1, 3); }
+    }
+  }
+
+  function drawWorld() {
+    const cx = Math.round(camX);
+    ctx.save(); ctx.translate(-cx, 0);
+    ctx.drawImage(bgLayer, 0, 0);
+    const sx = shake > 0 ? Math.round((Math.random() - 0.5) * shake) : 0;
+    const sy = shake > 0 ? Math.round((Math.random() - 0.5) * shake) : 0;
+    ctx.save(); ctx.translate(sx, sy);
+    for (const t2 of torches) drawTorch(t2);
+    for (const e of exits) drawExit(e);
+    ctx.drawImage(tileLayer, 0, 0);
+    for (const cr of crumbles) drawCrumble(cr);
+    drawBelts();
+    drawShine();
+    for (const lv of levers) drawLever(lv);
+    for (const pl of plates) drawPlate(pl);
+    for (const sp of springs) drawSpring(sp);
+    drawDoors();
+    for (const b of blocks) if (!b.dead && b !== carry) drawBlock(b);
+    for (const s of slimes) drawSlime(s);
+    if (mode !== 'dead') { drawPlayer(); if (carry) drawBlock(carry); }
+    for (const a of arrows) drawArrow(a);
+    for (const q of parts) {
+      ctx.globalAlpha = Math.max(0, 1 - q.life / q.max);
+      if (q.chip) px(q.c, Math.round(q.x), Math.round(q.y), 2, 1);
+      else px(q.c, Math.round(q.x), Math.round(q.y), q.s, q.s);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    drawLighting();
+    ctx.restore();
+    ctx.drawImage(vignette, 0, 0);
+    if (flashT > 0) { ctx.globalAlpha = flashT / 10; px(mode === 'dead' ? '#ffd0c0' : '#ffffff', 0, 0, W, H); ctx.globalAlpha = 1; }
+    drawIris();
+  }
+
+  function text(str, x, y, size, color, font, align) {
+    ctx.font = size + 'px ' + (font || '"Silkscreen", monospace');
+    ctx.textAlign = align || 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#000'; ctx.fillText(str, x, y + Math.max(1, Math.round(size / 12)));
+    ctx.fillStyle = color; ctx.fillText(str, x, y);
+  }
+  const TITLE_FONT = '"Jacquard 24", serif';
+  // The title screen: every level in turn, drawn at double size and panned slowly from left to
+  // right, fading through black between them; the name and menu sit over a black fade on the left.
+  const pv = $('pvc'), pvCtx = pv.getContext('2d');
+  const PV_LEN = 900, PV_FADE = 60;
+  // one slow, steady camera move per level, in source pixels of the double-size view: [x0, y0, x1, y1]
+  const MOVES = [
+    [0, 96, 160, 96],
+    [160, 60, 0, 60],
+    [100, 96, 100, 0],
+    [0, 10, 160, 96],
+    [150, 96, 10, 20],
+    [40, 0, 40, 96],
+    [160, 96, 0, 40],
+    [0, 40, 160, 90],
+    [160, 10, 0, 96],
+    [20, 96, 140, 0],
+    [0, 96, 160, 30],
+    [160, 0, 40, 96],
+    [80, 96, 80, 0],
+    [0, 0, 160, 96],
+    [160, 60, 0, 60]
+  ];
+  let pvIdx = 0, pvT = 0;
+  function startPreview(i) { pvIdx = i % LEVELS.length; pvT = 0; loadLevel(pvIdx, false, true); }
+  function drawTitle() {
+    const main = ctx;
+    ctx = pvCtx; ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.imageSmoothingEnabled = false;
+    drawWorld();
+    ctx = main;
+    // the preview layer sits behind this canvas at double size; sliding it with a CSS transform moves it
+    // by fractions of a pixel, so even a very slow pan glides instead of stepping
+    const [x0, y0, x1, y1] = MOVES[pvIdx % MOVES.length], t = pvT / PV_LEN;
+    const sx = x0 + (x1 - x0) * t, sy = y0 + (y1 - y0) * t;
+    pv.style.transform = 'translate(' + (-sx * 2 * viewScale) + 'px,' + (-sy * 2 * viewScale) + 'px)';
+    ctx.clearRect(0, 0, W, H);
+    const fade = Math.min(1, pvT / PV_FADE, (PV_LEN - pvT) / PV_FADE);
+    if (fade < 1) { ctx.globalAlpha = 1 - fade; px('#000', 0, 0, W, H); ctx.globalAlpha = 1; }
+    const g = ctx.createLinearGradient(0, 0, 170, 0);
+    g.addColorStop(0, 'rgba(0,0,0,0.55)'); g.addColorStop(0.45, 'rgba(0,0,0,0.3)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    if (settingsOpen) ctx.globalAlpha = 0.3;
+    text('Bloxxer', 22, 64, 48, '#ece3d3', TITLE_FONT, 'left');
+    menuItems().forEach((it, i) => {
+      const sel = i === menuSel;
+      text((sel ? '> ' : '') + it + (it === 'CONTINUE' ? '  LEVEL ' + (save.level + 1) : ''), sel ? 24 : 32, 104 + i * 13, 8, sel ? '#f0a24a' : '#b8b2c8', null, 'left');
+    });
+    ctx.globalAlpha = 1;
+  }
+  function drawEnd() {
+    ctx.drawImage(bgLayer, 0, 0);
+    ctx.fillStyle = 'rgba(6,4,12,0.55)'; ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';
+    ring(ctx, W / 2, 150, 160, '255,220,150', 0.25);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(vignette, 0, 0);
+    text('Daylight', W / 2, 58, 48, '#ffe2a0', TITLE_FONT);
+    const t = save.time, m = Math.floor(t / 60), s = Math.floor(t % 60).toString().padStart(2, '0');
+    text('DEATHS ' + save.deaths + '     TIME ' + m + ':' + s, W / 2, 100, 8, '#ece3d3');
+    const bx = W / 2 - 8, by = 140;
+    ctx.drawImage(CRATE, bx, by);
+    const hop = Math.abs(Math.sin(tick / 12)) * 6;
+    ctx.drawImage(PF[(hop > 1 ? 'jump' : 'stand') + 'idle0'][0], bx, Math.round(by - 19 - hop));
+  }
+  function draw() {
+    syncScene();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    if (scene === 'title') drawTitle();
+    else if (scene === 'end') drawEnd();
+    else drawWorld();
+  }
+
+  function fit() {
+    const avail = innerWidth - 32;
+    const maxH = Math.max(200, innerHeight - 40);
+    let s = Math.min(avail / W, maxH / H);
+    if (s >= 2) s = Math.floor(s * 2) / 2;
+    cv.style.width = Math.floor(W * s) + 'px';
+    cv.style.height = Math.floor(H * s) + 'px';
+    $('stage').style.setProperty('--u', s + 'px');
+    viewScale = s;
+    $('pvwrap').style.width = cv.style.width; $('pvwrap').style.height = cv.style.height;
+    pv.style.width = W * 2 * s + 'px'; pv.style.height = H * 2 * s + 'px';
+  }
+  let viewScale = 3;
+  addEventListener('resize', fit);
+
+  // ---------- boot ----------
+  const STEP_MS = 1000 / 60;
+  let acc = 0, last = performance.now();
+  const api = { manual: false };
+  function frame(now) {
+    acc += Math.min(100, now - last); last = now;
+    if (!api.manual) while (acc >= STEP_MS) { step(); acc -= STEP_MS; }
+    else acc = 0;
+    draw();
+    requestAnimationFrame(frame);
+  }
+  // test hook: drive the game one frame at a time
+  Object.assign(api, { load: i => { scene = 'play'; syncScene(); loadLevel(i, false); }, step, press, release });
+  Object.defineProperty(api, 'state', { get: () => ({ p, carry, blocks, slimes, arrows, doors, plates, springs, crumbles, timer, mode, levelIdx, scene, lt }) });
+  window.__game = api;
+
+  function start(data) {
+    buildPlayerFrames();
+    levelIdx = Math.min(save.level, LEVELS.length - 1);
+    startPreview(0);
+    renderBinds();
+    fit(); syncScene();
+    if (data && typeof data.level === 'number' && data.scene === 'play') { scene = 'play'; syncScene(); loadLevel(data.level, false); }
+    requestAnimationFrame(frame);
+  }
+  window.claude?.hot?.snapshot?.(() => ({ level: levelIdx, scene }));
+  const boot = d => (document.fonts && document.fonts.load ? Promise.all([document.fonts.load('8px "Silkscreen"'), document.fonts.load('48px "Jacquard 24"')]).catch(() => {}) : Promise.resolve()).then(() => start(d));
+  window.claude?.hot?.ready ? window.claude.hot.ready(boot) : boot(window.claude?.hot?.data ?? {});
+})();
+</script>
+</body>
+</html>

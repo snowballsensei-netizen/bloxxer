@@ -1,0 +1,5 @@
+# Only the playable game and README are published; dev tools and drafts stay local
+*
+!index.html
+!README.md
+!.gitignore
