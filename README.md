@@ -16,7 +16,7 @@ The whole game is one HTML file with no build step and no dependencies. Open `in
 | R | Retry the level |
 | Esc | Back to the title screen |
 
-Jump, grab, put down and bash can be changed from the settings on the title screen. Progress, deaths and time are saved in the browser.
+Jump, grab, put down and bash can be changed from the settings on the title screen, to a key or a left, middle or right click. Progress, deaths and time are saved in the browser.
 
 ## Under the hood
 
